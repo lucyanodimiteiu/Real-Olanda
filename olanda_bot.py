@@ -20,7 +20,8 @@ RSS_FEEDS = [
     "https://www.nu.nl/rss/Economie",
     "https://www.rijksoverheid.nl/actueel/nieuws/rss", # Decizii guvernamentale
     "https://www.transport-online.nl/site/rss/", # Transporturi auto, soferi, CAO
-    "https://www.ttm.nl/feed/" # Transport, legislatie
+    "https://www.ttm.nl/feed/", # Transport, legislatie
+    "https://www.anwb.nl/feeds/verkeer/fileberichten" # ANWB trafic live
 ]
 
 def init_db():
