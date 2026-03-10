@@ -56,18 +56,43 @@ def salveaza_stire(hash_link, titlu, sursa):
     conn.commit()
     conn.close()
 
-def trimite_pe_telegram(text):
+def genereaza_imagine(titlu_stire):
+    try:
+        # Prompt simplu si sigur pentru generare
+        prompt_encoded = requests.utils.quote(f"news illustration for: {titlu_stire[:100]}, professional photography, realistic")
+        resp = requests.get(f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=800&height=450&nologo=true", timeout=20)
+        if resp.status_code == 200:
+            return resp.content
+    except Exception as e:
+        print(f"Eroare generare imagine: {e}")
+    return None
+
+def trimite_pe_telegram(text, image_bytes=None):
     if not BOT_TOKEN or not CHANNEL_ID:
         print("Lipsesc variabilele de Telegram.")
         return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHANNEL_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": False
-    }
-    resp = requests.post(url, json=payload)
+    
+    if image_bytes:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+        data = {
+            "chat_id": CHANNEL_ID,
+            "caption": text,
+            "parse_mode": "HTML"
+        }
+        files = {
+            "photo": ("image.jpg", image_bytes, "image/jpeg")
+        }
+        resp = requests.post(url, data=data, files=files)
+    else:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": CHANNEL_ID,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False
+        }
+        resp = requests.post(url, json=payload)
+        
     if resp.status_code != 200:
         print(f"Eroare Telegram: {resp.text}")
 
@@ -168,7 +193,10 @@ def main():
                 # Format mesaj Telegram
                 mesaj = f"🇳🇱 <b>{titlu_ro}</b>\n\n{rezumat_ro}\n\n<a href='{stire_bruta['link']}'>Sursa originală</a>"
                 
-                trimite_pe_telegram(mesaj)
+                # Generam o imagine relevanta inainte de trimitere
+                image_bytes = genereaza_imagine(titlu_ro)
+                
+                trimite_pe_telegram(mesaj, image_bytes)
                 salveaza_stire(stire_bruta['hash'], stire_bruta['title'], stire_bruta['source'])
 
         # Salvăm și restul știrilor din chunk ca "procesate" ca să nu le mai trimitem la AI tura viitoare
