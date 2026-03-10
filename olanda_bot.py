@@ -15,7 +15,12 @@ DB_PATH = "stiri_olanda.db"
 
 RSS_FEEDS = [
     "https://feeds.nos.nl/nosnieuwsalgemeen",
-    "https://www.nu.nl/rss/Algemeen"
+    "https://feeds.nos.nl/noseconomie",
+    "https://www.nu.nl/rss/Algemeen",
+    "https://www.nu.nl/rss/Economie",
+    "https://www.rijksoverheid.nl/actueel/nieuws/rss", # Decizii guvernamentale
+    "https://www.transport-online.nl/site/rss/", # Transporturi auto, soferi, CAO
+    "https://www.ttm.nl/feed/" # Transport, legislatie
 ]
 
 def init_db():
@@ -75,12 +80,13 @@ def evalueaza_si_traduce_batch(stiri_noi):
         batch_text += f"[{idx}] {stire['title']} - {stire['description']}\\n"
 
     prompt = f"""
-Ești un editor de știri senior (AI OSINT). Analizează următorul lot de știri brute din Olanda.
+Ești un asistent AI pentru un șofer profesionist de TIR în Olanda (contract D6, CAO).
+Analizează următorul lot de știri din presa olandeză, guvern și sectorul de transporturi.
 REGULI:
-1. ELIMINĂ complet știrile despre mondenități (cancan, showbiz, sport minor, bârfe).
-2. Păstrează DOAR știrile majore (politică, economie, societate, incidente grave).
-3. Alege MAXIMUM 10 cele mai importante știri din acest lot.
-4. TRADUCE și RESCRIE fiecare știre selectată în limba română (stil Reuters/jurnalistic, maxim 3 paragrafe, fără opinii personale).
+1. ELIMINĂ DOAR știrile despre mondenități, cancan, showbiz, bârfe sau sport minor.
+2. PĂSTREAZĂ ABSOLUT TOATE CELELALTE ȘTIRI valabile din listă (nu există limită de număr).
+3. TRADUCE și RESCRIE fiecare știre selectată în limba română (stil clar, informativ, maxim 3 paragrafe).
+4. EVIDENȚIAZĂ/PUNE ACCENT (dacă e cazul) pe: drumuri închise, accidente grave, taxe, decizii economice/guvernamentale, noutăți pentru expați, legislație CAO și forță de muncă în transporturi.
 
 Răspunde STRICT în format JSON (array de obiecte), fără alte comentarii de formatare:
 [
@@ -121,43 +127,51 @@ def main():
     
     # 1. Scraping RSS
     for feed_url in RSS_FEEDS:
-        feed = feedparser.parse(feed_url)
-        for entry in feed.entries[:15]: # Luăm ultimele 15 din fiecare sursă
-            link_hash = hash_text(entry.link)
-            if not stire_existenta(link_hash):
-                stiri_noi.append({
-                    "hash": link_hash,
-                    "title": entry.title,
-                    "description": getattr(entry, 'description', ''),
-                    "link": entry.link,
-                    "source": feed_url
-                })
+        try:
+            feed = feedparser.parse(feed_url)
+            for entry in feed.entries[:15]: # Luăm ultimele 15 din fiecare sursă
+                link_hash = hash_text(entry.link)
+                if not stire_existenta(link_hash):
+                    stiri_noi.append({
+                        "hash": link_hash,
+                        "title": entry.title,
+                        "description": getattr(entry, 'description', ''),
+                        "link": entry.link,
+                        "source": feed_url
+                    })
+        except Exception as e:
+            print(f"Eroare la parsarea feed-ului {feed_url}: {e}")
 
     print(f"S-au găsit {len(stiri_noi)} știri noi neprocesate.")
     if not stiri_noi:
         return
 
-    # 2. Procesare prin AI (Filtrare + Traducere)
-    rezultate = evalueaza_si_traduce_batch(stiri_noi)
-    
-    # 3. Postare și Salvare
-    for rez in rezultate:
-        idx = rez.get('idx_original')
-        if idx is not None and 0 <= idx < len(stiri_noi):
-            stire_bruta = stiri_noi[idx]
-            titlu_ro = rez.get('titlu_ro', '')
-            rezumat_ro = rez.get('rezumat_ro', '')
-            
-            # Format mesaj Telegram
-            mesaj = f"🇳🇱 <b>{titlu_ro}</b>\n\n{rezumat_ro}\n\n<a href='{stire_bruta['link']}'>Sursa originală</a>"
-            
-            trimite_pe_telegram(mesaj)
-            salveaza_stire(stire_bruta['hash'], stire_bruta['title'], stire_bruta['source'])
+    # Impartim in calupuri de max 20 stiri pentru a nu depasi limitele de tokeni per request la DeepSeek
+    chunk_size = 20
+    for i in range(0, len(stiri_noi), chunk_size):
+        chunk = stiri_noi[i:i + chunk_size]
+        print(f"Procesăm chunk de la {i} la {i+len(chunk)}")
+        
+        rezultate = evalueaza_si_traduce_batch(chunk)
+        
+        # 3. Postare și Salvare
+        for rez in rezultate:
+            idx = rez.get('idx_original')
+            if idx is not None and 0 <= idx < len(chunk):
+                stire_bruta = chunk[idx]
+                titlu_ro = rez.get('titlu_ro', '')
+                rezumat_ro = rez.get('rezumat_ro', '')
+                
+                # Format mesaj Telegram
+                mesaj = f"🇳🇱 <b>{titlu_ro}</b>\n\n{rezumat_ro}\n\n<a href='{stire_bruta['link']}'>Sursa originală</a>"
+                
+                trimite_pe_telegram(mesaj)
+                salveaza_stire(stire_bruta['hash'], stire_bruta['title'], stire_bruta['source'])
 
-    # Salvăm și restul știrilor ca "procesate" ca să nu le mai trimitem la AI tura viitoare
-    for stire in stiri_noi:
-        if not stire_existenta(stire['hash']):
-            salveaza_stire(stire['hash'], stire['title'], stire['source'])
+        # Salvăm și restul știrilor din chunk ca "procesate" ca să nu le mai trimitem la AI tura viitoare
+        for stire in chunk:
+            if not stire_existenta(stire['hash']):
+                salveaza_stire(stire['hash'], stire['title'], stire['source'])
 
 if __name__ == "__main__":
     main()
