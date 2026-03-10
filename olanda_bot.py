@@ -130,7 +130,9 @@ def main():
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:15]: # Luăm ultimele 15 din fiecare sursă
+            # Pentru ANWB luăm mai multe, pentru restul 15
+            limit = 50 if "anwb.nl" in feed_url else 15
+            for entry in feed.entries[:limit]:
                 link_hash = hash_text(entry.link)
                 if not stire_existenta(link_hash):
                     stiri_noi.append({
