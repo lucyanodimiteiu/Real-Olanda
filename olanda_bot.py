@@ -4,6 +4,7 @@ import hashlib
 import json
 import requests
 import feedparser
+import asyncio
 from datetime import datetime
 
 # --- CONFIGURARE ---
@@ -67,7 +68,18 @@ def genereaza_imagine(titlu_stire):
         print(f"Eroare generare imagine: {e}")
     return None
 
-def trimite_pe_telegram(text, image_bytes=None):
+async def genereaza_audio(text_de_citit, filepath):
+    try:
+        import edge_tts
+        # Vocea 'ro-RO-EmilNeural' (voce de baiat, clara)
+        communicate = edge_tts.Communicate(text_de_citit, "ro-RO-EmilNeural")
+        await communicate.save(filepath)
+        return True
+    except Exception as e:
+        print(f"Eroare generare audio: {e}")
+        return False
+
+def trimite_pe_telegram(text, image_bytes=None, audio_path=None):
     if not BOT_TOKEN or not CHANNEL_ID:
         print("Lipsesc variabilele de Telegram.")
         return
@@ -83,6 +95,14 @@ def trimite_pe_telegram(text, image_bytes=None):
             "photo": ("image.jpg", image_bytes, "image/jpeg")
         }
         resp = requests.post(url, data=data, files=files)
+        
+        # Daca avem audio, il trimitem ca un Reply (sau Voice Message separat) la aceeasi stire
+        if audio_path and os.path.exists(audio_path) and resp.status_code == 200:
+            msg_id = resp.json().get('result', {}).get('message_id')
+            url_audio = f"https://api.telegram.org/bot{BOT_TOKEN}/sendVoice"
+            with open(audio_path, 'rb') as f:
+                requests.post(url_audio, data={"chat_id": CHANNEL_ID, "reply_to_message_id": msg_id}, files={"voice": f})
+
     else:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {
@@ -147,7 +167,7 @@ Răspunde STRICT în format JSON (array de obiecte), fără alte comentarii de f
         print(f"Eroare parsare JSON AI: {e}")
         return []
 
-def main():
+async def main_async():
     init_db()
     stiri_noi = []
     
@@ -196,7 +216,17 @@ def main():
                 # Generam o imagine relevanta inainte de trimitere
                 image_bytes = genereaza_imagine(titlu_ro)
                 
-                trimite_pe_telegram(mesaj, image_bytes)
+                # Generare Audio cu TTS
+                audio_path = f"audio_{stire_bruta['hash']}.mp3"
+                text_pt_audio = f"{titlu_ro}. {rezumat_ro}"
+                await genereaza_audio(text_pt_audio, audio_path)
+                
+                trimite_pe_telegram(mesaj, image_bytes, audio_path)
+                
+                # Cleanup audio
+                if os.path.exists(audio_path):
+                    os.remove(audio_path)
+                
                 salveaza_stire(stire_bruta['hash'], stire_bruta['title'], stire_bruta['source'])
 
         # Salvăm și restul știrilor din chunk ca "procesate" ca să nu le mai trimitem la AI tura viitoare
@@ -205,4 +235,4 @@ def main():
                 salveaza_stire(stire['hash'], stire['title'], stire['source'])
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main_async())
