@@ -1,0 +1,42 @@
+name: Automatizare Stiri Olanda RSS
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 * * * *' # Rulează din oră în oră
+
+concurrency:
+  group: scraping-olanda
+  cancel-in-progress: true
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Restore SQLite DB (cache dinamic intre rulari)
+        uses: actions/cache@v3
+        with:
+          path: stiri_olanda.db
+          key: stiri-olanda-db-${{ github.run_id }}
+          restore-keys: stiri-olanda-db-
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Script Olanda RSS
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: python olanda_bot.py
