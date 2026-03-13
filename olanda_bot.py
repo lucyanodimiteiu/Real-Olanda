@@ -5,11 +5,10 @@ import json
 import requests
 import feedparser
 import re
-import pytz
 from datetime import datetime
 
 # ==========================================
-# CONFIGURAȚII (Preluat din GitHub Secrets)
+# CONFIGURAȚII
 # ==========================================
 DEEPSEEK_KEY = os.getenv('DEEPSEEK_API_KEY')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -26,7 +25,7 @@ BLACKLIST_SET = set()
 SEMNATURA = "@real_live_by_luci"
 
 # ==========================================
-# GESTIONARE MEMORIE (Deduplicare)
+# GESTIONARE MEMORIE
 # ==========================================
 def load_blacklist():
     global BLACKLIST_SET
@@ -44,22 +43,22 @@ def add_to_blacklist(h):
             with open(BLACKLIST_FILE, 'a', encoding='utf-8') as f:
                 f.write(h + '\n')
         except Exception as e:
-            print(f"⚠️ Eroare scriere blacklist local: {e}")
+            print(f"⚠️ Eroare scriere blacklist: {e}")
 
 def hash_text(text):
     return hashlib.md5(text.encode('utf-8')).hexdigest()
 
 # ==========================================
-# UTILITARE AI ȘI CLEANUP (Fixed Regex)
+# UTILITARE AI
 # ==========================================
-def clean_json_response(raw_text):
-    # Fixat: Elimină blocurile Markdown pe un singur rând
-    clean_text = re.sub(r'`json\s*|```', '', raw_text).strip()
-    return clean_text
+def clean_json_response(text_de_curatat):
+    # Elimină blocurile Markdown (ex:
+    return re.sub(r'
+json\s*|```', '', text_de_curatat).strip()
 
 async def proceseaza_cu_ai(titlu, descriere):
     if not DEEPSEEK_KEY: 
-        print("❌ EROARE: Lipsă DEEPSEEK_API_KEY în Secrets!")
+        print("❌ Lipsă cheie API DeepSeek!")
         return None
     
     prompt = f"""
@@ -76,76 +75,40 @@ Răspunde STRICT JSON:
 
     headers = {"Authorization": f"Bearer {DEEPSEEK_KEY}", "Content-Type": "application/json"}
     try:
-        # Timeout mărit la 60s pentru stabilitate
         resp = requests.post("https://api.deepseek.com/v1/chat/completions", json={
             "model": "deepseek-chat", 
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.2
-        }, headers=headers, timeout=60)
+            "temperature": 0.2,
+            "response_format": {"type": "json_object"} # FORȚĂM JSON-UL SĂ FIE VALID
+        }, headers=headers, timeout=60) # TIMEOUT MĂRIT LA 60S
         
-        raw_content = resp.json()['choices'][0]['message']['content']
-        print(f"🤖 AI Response raw: {raw_content[:150]}...") 
+        # Verificăm dacă serverul DeepSeek a dat o eroare generală (ex. 502 Bad Gateway)
+        resp.raise_for_status()
         
-        content = clean_json_response(raw_text)
-        return json.loads(content)
+        # Extragem conținutul brut
+        continut_brut = resp.json()['choices'][0]['message']['content']
+        print(f"🤖 AI Response raw: {str(continut_brut)[:150]}...") 
+        
+        # Curățăm și parsăm JSON-ul
+        continut_curat = clean_json_response(continut_brut)
+        return json.loads(continut_curat)
     except Exception as e:
         print(f"⚠️ Eroare AI: {e}")
         return None
 
 # ==========================================
-# NUCLEUL SISTEMULUI (Main cu fix pentru stabilitate)
+# TELEGRAM
 # ==========================================
-async def main():
-    print(f"🚀 Pornire robot Real-Olanda: {datetime.now().strftime('%H:%M:%S')}")
-    load_blacklist()
- 
-    for url in RSS_FEEDS:
-        print(f"📡 Scanăm feed-ul: {url}")
-        feed = feedparser.parse(url)
- 
-        if not hasattr(feed, 'entries'):
-            print(f"⚠️ Feed-ul {url} este inaccesibil.")
-            continue
+async def trimite_telegram(text_final):
+    if not TELEGRAM_TOKEN or not CANAL_DESTINATIE: return False
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": CANAL_DESTINATIE, "text": text_final, "parse_mode": "HTML"}
+    try:
+        resp = requests.post(url, json=payload, timeout=15)
+        return resp.status_code == 200
+    except Exception:
+        return False
 
-        for entry in feed.entries[:15]:
-            # Fix: Ignorăm obiectele invalide
-            if not hasattr(entry, 'get') or isinstance(entry, str):
-                continue
-
-            titlu = getattr(entry, 'title', '')
-            link = getattr(entry, 'link', '')
- 
-            if not link:
-                continue
-
-            h = hash_text(link)
-
-            if not is_blacklisted(h):
-                print(f"🔎 Știre nouă: {titlu[:50]}...")
-                descriere = getattr(entry, 'description', '')
-                res = await proceseaza_cu_ai(titlu, descriere)
- 
-                if res:
-                    # Construcție postare Premium
-                    emoji = res.get('emoji', '📰')
-                    cat = res.get('categorie', '#Diverse')
-                    text_ro = res.get('text_ro', 'Fără traducere')
- 
-                    postare_finala = (
-                        f"{emoji} <b>{cat}</b>\n\n"
-                        f"{text_ro}\n\n"
-                        f"🔗 <a href='{link}'>Sursa Originală</a>\n\n"
-                        f"{SEMNATURA}"
-                    )
- 
-                    if await trimite_telegram(postare_finala):
-                        add_to_blacklist(h)
-                        print(f"✅ Postat și salvat!")
-                        await asyncio.sleep(2)
-            else:
-                print(f"⏭️ Sărit (duplicat)")
-
-    print(f"🏁 Rulare finalizată la {datetime.now().strftime('%H:%M:%S')}")
-
-if __name__ == "__main__":
-    asyncio.run(main())
+# ==========================================
+# MAIN
+# ==========================================
