@@ -53,9 +53,8 @@ def hash_text(text):
 # UTILITARE AI ȘI CLEANUP
 # ==========================================
 def clean_json_response(raw_text):
-    # Elimină blocurile Markdown
-    clean_text = re.sub(r'
-json\s*|```', '', raw_text).strip()
+    # Fixat regex-ul care era rupt la tine
+    clean_text = re.sub(r'`json\s*|```', '', raw_text).strip()
     return clean_text
 
 async def proceseaza_cu_ai(titlu, descriere):
@@ -84,7 +83,7 @@ Răspunde STRICT JSON:
         }, headers=headers, timeout=30)
         
         raw_content = resp.json()['choices'][0]['message']['content']
-        print(f"🤖 AI Response: {raw_content[:150]}...") 
+        print(f"🤖 AI Response raw: {raw_content[:150]}...") 
         
         content = clean_json_response(raw_content)
         return json.loads(content)
@@ -115,57 +114,5 @@ async def trimite_telegram(text_final):
         return False
 
 # ==========================================
-# NUCLEUL SISTEMULUI (Main cu fix pentru 'str' object)
+# NUCLEUL SISTEMULUI
 # ==========================================
-async def main():
-    print(f"🚀 Pornire robot Real-Olanda: {datetime.now().strftime('%H:%M:%S')}")
-    load_blacklist()
-    
-    for url in RSS_FEEDS:
-        print(f"📡 Scanăm feed-ul: {url}")
-        feed = feedparser.parse(url)
-        
-        if not hasattr(feed, 'entries'):
-            print(f"⚠️ Feed-ul {url} este inaccesibil sau invalid.")
-            continue
-
-        for entry in feed.entries[:15]:
-            # FIX CRITIC: Ignorăm obiectele care nu sunt dicționare (erorile tale anterioare)
-            if not hasattr(entry, 'get') or isinstance(entry, str):
-                continue
-
-            titlu = getattr(entry, 'title', '')
-            link = getattr(entry, 'link', '')
-            
-            if not link:
-                continue
-
-            h = hash_text(link)
-
-            if not is_blacklisted(h):
-                print(f"🔎 Știre nouă: {titlu[:50]}...")
-                
-                descriere = getattr(entry, 'description', '')
-                res = await proceseaza_cu_ai(titlu, descriere)
-                
-                if res:
-                    # Formatare Premium cu Emoji și Hashtag
-                    postare_finala = (
-                        f"{res.get('emoji', '📰')} <b>{res.get('categorie', '#Diverse')}</b>\n\n"
-                        f"{res.get('text_ro', 'Fără traducere')}\n\n"
-                        f"🔗 <a href='{link}'>Sursa Originală</a>\n\n"
-                        f"{SEMNATURA}"
-                    )
-                    
-                    if await trimite_telegram(postare_finala):
-                        add_to_blacklist(h)
-                        print(f"✅ Postat și salvat în memorie!")
-                        await asyncio.sleep(2) # Pauză anti-spam
-            else:
-                # Doar un indicator vizual scurt pentru duplicate
-                print(f"⏭️ Sărit (duplicat)")
-
-    print(f"🏁 Rulare finalizată la {datetime.now().strftime('%H:%M:%S')}")
-
-if __name__ == "__main__":
-    asyncio.run(main())
