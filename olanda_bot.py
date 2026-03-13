@@ -59,10 +59,10 @@ def hash_text(text: str) -> str:
 # ==========================================
 def clean_json_response(text: str) -> str:
     """Curăță blocurile Markdown din răspunsul AI."""
-    cleaned = re.sub(r'^```json\s*', '', text.strip())
-    cleaned = re.sub(r'^```\s*', '', cleaned)
-    cleaned = re.sub(r'\s*```$', '', cleaned)
-    return cleaned.strip()
+    # Elimină ```json la început și ``` la sfârșit
+    cleaned = re.sub(r'^```json\s*', '', text).strip()
+    cleaned = re.sub(r'```$', '', cleaned).strip()
+    return cleaned
 
 async def proceseaza_cu_ai(titlu: str, descriere: str) -> Optional[Dict[str, Any]]:
     """Procesează știrea cu DeepSeek AI."""
