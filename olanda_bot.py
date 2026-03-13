@@ -93,23 +93,59 @@ Răspunde STRICT JSON:
         return None
 
 # ==========================================
-# TELEGRAM COMUNICAȚIE
+# NUCLEUL SISTEMULUI (Main cu fix pentru stabilitate)
 # ==========================================
-async def trimite_telegram(text_final):
-    if not TELEGRAM_TOKEN or not CANAL_DESTINATIE:
-        print("❌ EROARE: Lipsesc credențialele Telegram!")
-        return False
-    
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CANAL_DESTINATIE,
-        "text": text_final,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": False
-    }
-    try:
-        resp = requests.post(url, json=payload, timeout=15)
-        return resp.status_code == 200
-    except Exception as e:
-        print(f"❌ Eroare la trimiterea mesajului: {e}")
-        return False
+async def main():
+    print(f"🚀 Pornire robot Real-Olanda: {datetime.now().strftime('%H:%M:%S')}")
+    load_blacklist()
+ 
+    for url in RSS_FEEDS:
+        print(f"📡 Scanăm feed-ul: {url}")
+        feed = feedparser.parse(url)
+ 
+        if not hasattr(feed, 'entries'):
+            print(f"⚠️ Feed-ul {url} este inaccesibil.")
+            continue
+
+        for entry in feed.entries[:15]:
+            # Fix: Ignorăm obiectele invalide
+            if not hasattr(entry, 'get') or isinstance(entry, str):
+                continue
+
+            titlu = getattr(entry, 'title', '')
+            link = getattr(entry, 'link', '')
+ 
+            if not link:
+                continue
+
+            h = hash_text(link)
+
+            if not is_blacklisted(h):
+                print(f"🔎 Știre nouă: {titlu[:50]}...")
+                descriere = getattr(entry, 'description', '')
+                res = await proceseaza_cu_ai(titlu, descriere)
+ 
+                if res:
+                    # Construcție postare Premium
+                    emoji = res.get('emoji', '📰')
+                    cat = res.get('categorie', '#Diverse')
+                    text_ro = res.get('text_ro', 'Fără traducere')
+ 
+                    postare_finala = (
+                        f"{emoji} <b>{cat}</b>\n\n"
+                        f"{text_ro}\n\n"
+                        f"🔗 <a href='{link}'>Sursa Originală</a>\n\n"
+                        f"{SEMNATURA}"
+                    )
+ 
+                    if await trimite_telegram(postare_finala):
+                        add_to_blacklist(h)
+                        print(f"✅ Postat și salvat!")
+                        await asyncio.sleep(2)
+            else:
+                print(f"⏭️ Sărit (duplicat)")
+
+    print(f"🏁 Rulare finalizată la {datetime.now().strftime('%H:%M:%S')}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
