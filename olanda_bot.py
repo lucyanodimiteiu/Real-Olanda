@@ -61,23 +61,20 @@ def clean_json_response(raw_text):
 # AI - TRADUCERE ȘI CATEGORISIRE (Upgrade Estetic)
 # ==========================================
 async def proceseaza_cu_ai(titlu, descriere):
-    if not DEEPSEEK_KEY: return None
+    if not DEEPSEEK_KEY: 
+        print("❌ EROARE: Lipsă DEEPSEEK_API_KEY în Secrets!")
+        return None
     
     prompt = f"""
 Ești un editor de știri OSINT. Traduce și rezumă știrea în română (stil Reuters).
-Alege o categorie potrivită: #Transport, #Vreme, #Politica, #Economie, #Social sau #Diverse.
-Alege un emoji relevant pentru categorie.
+Alege o categorie: #Transport, #Vreme, #Politica, #Economie, #Social sau #Diverse.
+Alege un emoji relevant.
 
-ȘTIRE OLANDA:
 Titlu: {titlu}
 Descriere: {descriere}
 
 Răspunde STRICT JSON: 
-{{
-  "categorie": "#Transport",
-  "emoji": "🚄",
-  "text_ro": "Titlu Tradus - Rezumatul știrii..."
-}}
+{{"categorie": "#Diverse", "emoji": "📰", "text_ro": "Titlu Tradus - Rezumat..."}}
 """
 
     headers = {"Authorization": f"Bearer {DEEPSEEK_KEY}", "Content-Type": "application/json"}
@@ -85,14 +82,18 @@ Răspunde STRICT JSON:
         resp = requests.post("https://api.deepseek.com/v1/chat/completions", json={
             "model": "deepseek-chat", 
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3,
-            "response_format": {"type": "json_object"}
+            "temperature": 0.2
         }, headers=headers, timeout=30)
         
-        content = clean_json_response(resp.json()['choices'][0]['message']['content'])
+        # --- LINIA DE KONTROL ---
+        raw_content = resp.json()['choices'][0]['message']['content']
+        print(f"🤖 AI Response raw: {raw_content[:150]}...") 
+        # ------------------------
+
+        content = clean_json_response(raw_content)
         return json.loads(content)
     except Exception as e:
-        print(f"⚠️ Eroare AI: {e}")
+        print(f"⚠️ Eroare la comunicarea cu AI: {e}")
         return None
 
 # ==========================================
