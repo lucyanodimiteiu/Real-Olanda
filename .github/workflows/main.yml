@@ -28,8 +28,8 @@ jobs:
       - name: Run Bot
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          OLANDA_CHANNEL_ID: ${{ secrets.OLANDA_CHANNEL_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.OLANDA_CHANNEL_ID }}
         run: python olanda_bot.py
 
       - name: 💾 Salvare Blacklist (Push)
