@@ -12,8 +12,8 @@ from typing import Optional, Dict, Any
 # CONFIGURAȚII
 # ==========================================
 DEEPSEEK_KEY = os.getenv('DEEPSEEK_API_KEY')
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-CANAL_DESTINATIE = os.getenv('OLANDA_CHANNEL_ID')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+CANAL_DESTINATIE = os.getenv('TELEGRAM_CHANNEL_ID')
 
 RSS_FEEDS = [
     'https://www.nu.nl/rss/Algemeen',
@@ -180,8 +180,8 @@ async def main():
     if not all([DEEPSEEK_KEY, TELEGRAM_TOKEN, CANAL_DESTINATIE]):
         print("❌ Configurație incompletă! Verifică variabilele de mediu:")
         print(f"   - DEEPSEEK_API_KEY: {'✅' if DEEPSEEK_KEY else '❌'}")
-        print(f"   - TELEGRAM_TOKEN: {'✅' if TELEGRAM_TOKEN else '❌'}")
-        print(f"   - OLANDA_CHANNEL_ID: {'✅' if CANAL_DESTINATIE else '❌'}")
+        print(f"   - TELEGRAM_BOT_TOKEN: {'✅' if TELEGRAM_TOKEN else '❌'}")
+        print(f"   - TELEGRAM_CHANNEL_ID: {'✅' if CANAL_DESTINATIE else '❌'}")
         return
     
     load_blacklist()
