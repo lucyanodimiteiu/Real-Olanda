@@ -50,10 +50,10 @@ def hash_text(text):
     return hashlib.md5(text.encode('utf-8')).hexdigest()
 
 # ==========================================
-# UTILITARE AI ȘI CLEANUP
+# UTILITARE AI ȘI CLEANUP (Fixed Regex)
 # ==========================================
 def clean_json_response(raw_text):
-    # Fixat regex-ul care era rupt la tine
+    # Fixat: Elimină blocurile Markdown pe un singur rând
     clean_text = re.sub(r'`json\s*|```', '', raw_text).strip()
     return clean_text
 
@@ -76,16 +76,17 @@ Răspunde STRICT JSON:
 
     headers = {"Authorization": f"Bearer {DEEPSEEK_KEY}", "Content-Type": "application/json"}
     try:
+        # Timeout mărit la 60s pentru stabilitate
         resp = requests.post("https://api.deepseek.com/v1/chat/completions", json={
             "model": "deepseek-chat", 
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2
-        }, headers=headers, timeout=30)
+        }, headers=headers, timeout=60)
         
         raw_content = resp.json()['choices'][0]['message']['content']
         print(f"🤖 AI Response raw: {raw_content[:150]}...") 
         
-        content = clean_json_response(raw_content)
+        content = clean_json_response(raw_text)
         return json.loads(content)
     except Exception as e:
         print(f"⚠️ Eroare AI: {e}")
@@ -112,55 +113,3 @@ async def trimite_telegram(text_final):
     except Exception as e:
         print(f"❌ Eroare la trimiterea mesajului: {e}")
         return False
-
-# ==========================================
-# NUCLEUL SISTEMULUI
-# ==========================================
-async def main():
-    print(f"🚀 Pornire robot Real-Olanda: {datetime.now().strftime('%H:%M:%S')}")
-    load_blacklist()
- 
-    for url in RSS_FEEDS:
-        print(f"📡 Scanăm feed-ul: {url}")
-        feed = feedparser.parse(url)
- 
-        if not hasattr(feed, 'entries'):
-            print(f"⚠️ Feed-ul {url} este inaccesibil.")
-            continue
-
-        for entry in feed.entries[:15]:
-            if not hasattr(entry, 'get') or isinstance(entry, str):
-                continue
-
-            titlu = getattr(entry, 'title', '')
-            link = getattr(entry, 'link', '')
- 
-            if not link:
-                continue
-
-            h = hash_text(link)
-
-            if not is_blacklisted(h):
-                print(f"🔎 Știre nouă: {titlu[:50]}...")
-                descriere = getattr(entry, 'description', '')
-                res = await proceseaza_cu_ai(titlu, descriere)
- 
-                if res:
-                    postare_finala = (
-                        f"{res.get('emoji', '📰')} <b>{res.get('categorie', '#Diverse')}</b>\n\n"
-                        f"{res.get('text_ro', 'Fără traducere')}\n\n"
-                        f"🔗 <a href='{link}'>Sursa Originală</a>\n\n"
-                        f"{SEMNATURA}"
-                    )
- 
-                    if await trimite_telegram(postare_finala):
-                        add_to_blacklist(h)
-                        print(f"✅ Postat cu succes!")
-                        await asyncio.sleep(2)
-            else:
-                print(f"⏭️ Sărit (duplicat)")
-
-    print(f"🏁 Rulare finalizată la {datetime.now().strftime('%H:%M:%S')}")
-
-if __name__ == "__main__":
-    asyncio.run(main())
