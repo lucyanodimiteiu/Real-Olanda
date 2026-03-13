@@ -13,21 +13,21 @@ from datetime import datetime
 # CONFIGURAȚII
 # ==========================================
 DEEPSEEK_KEY = os.getenv('DEEPSEEK_API_KEY')
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN') # Presupunem că folosești Token pentru Bot API aici
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CANAL_DESTINATIE = os.getenv('OLANDA_CHANNEL_ID') 
 
 RSS_FEEDS = [
     'https://www.nu.nl/rss/Algemeen',
     'https://nos.nl/export/rss/nederland.xml',
-    # Adaugă aici restul feed-urilor tale
+    'https://www.anwb.nl/feeds/verkeersinformatie'
 ]
 
 BLACKLIST_FILE = "processed_links_olanda.txt"
 BLACKLIST_SET = set()
-SEMNATURA = "@Real_Olanda"
+SEMNATURA = "@real_live_by_luci"
 
 # ==========================================
-# MEMORIE ȘI DEDUPLICARE (Upgrade Real-Live)
+# MEMORIE ȘI DEDUPLICARE
 # ==========================================
 def load_blacklist():
     global BLACKLIST_SET
@@ -51,23 +51,34 @@ def hash_text(text):
     return hashlib.md5(text.encode('utf-8')).hexdigest()
 
 # ==========================================
-# CURĂȚARE JSON (Recomandarea Grigore)
+# CURĂȚARE JSON (Protecție Grigore-Approved)
 # ==========================================
 def clean_json_response(raw_text):
-    # Elimină ```json ... ``` dacă DeepSeek le adaugă
     clean_text = re.sub(r'```json\s*|```', '', raw_text).strip()
     return clean_text
 
 # ==========================================
-# AI - TRADUCERE ȘI ANALIZĂ
+# AI - TRADUCERE ȘI CATEGORISIRE (Upgrade Estetic)
 # ==========================================
 async def proceseaza_cu_ai(titlu, descriere):
     if not DEEPSEEK_KEY: return None
     
-    prompt = f"""Ești un traducător profesionist. Traduce și rezumă știrea în română.
+    prompt = f"""
+Ești un editor de știri OSINT. Traduce și rezumă știrea în română (stil Reuters).
+Alege o categorie potrivită: #Transport, #Vreme, #Politica, #Economie, #Social sau #Diverse.
+Alege un emoji relevant pentru categorie.
+
+ȘTIRE OLANDA:
 Titlu: {titlu}
 Descriere: {descriere}
-Răspunde strict JSON: {{"text_ro": "Titlu Tradus - Rezumat pe scurt"}}"""
+
+Răspunde STRICT JSON: 
+{{
+  "categorie": "#Transport",
+  "emoji": "🚄",
+  "text_ro": "Titlu Tradus - Rezumatul știrii..."
+}}
+"""
 
     headers = {"Authorization": f"Bearer {DEEPSEEK_KEY}", "Content-Type": "application/json"}
     try:
@@ -85,28 +96,55 @@ Răspunde strict JSON: {{"text_ro": "Titlu Tradus - Rezumat pe scurt"}}"""
         return None
 
 # ==========================================
+# TELEGRAM SEND
+# ==========================================
+async def trimite_telegram(text_final):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CANAL_DESTINATIE,
+        "text": text_final,
+        "parse_mode": "HTML"
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=10)
+        return resp.status_code == 200
+    except Exception as e:
+        print(f"❌ Eroare Telegram: {e}")
+        return False
+
+# ==========================================
 # MAIN LOOP
 # ==========================================
 async def main():
     load_blacklist()
-    stiri_noi = []
-
+    
     for url in RSS_FEEDS:
+        print(f"📡 Scanăm feed-ul: {url}")
         feed = feedparser.parse(url)
         for entry in feed.entries[:10]:
             titlu = getattr(entry, 'title', '')
             link = getattr(entry, 'link', '')
-            # Cream un hash stabil din Link (RSS-ul are link-uri unice de obicei)
             h = hash_text(link)
 
             if not is_blacklisted(h):
-                print(f"🔎 Știre nouă găsită: {titlu}")
+                print(f"🔎 Procesăm știrea: {titlu}")
                 res = await proceseaza_cu_ai(titlu, entry.get('description', ''))
+                
                 if res:
-                    # Aici trimiți pe Telegram (presupunem funcția de trimitere)
-                    # await trimite_telegram(res['text_ro'], link)
-                    print(f"📤 Postat: {titlu}")
-                    add_to_blacklist(h)
+                    # Construim postarea cu noul format
+                    postare_finala = (
+                        f"{res['emoji']} <b>{res['categorie']}</b>\n\n"
+                        f"{res['text_ro']}\n\n"
+                        f"🔗 <a href='{link}'>Sursa Originală</a>\n\n"
+                        f"{SEMNATURA}"
+                    )
+                    
+                    if await trimite_telegram(postare_finala):
+                        add_to_blacklist(h)
+                        print(f"✅ Postat cu succes!")
+                        await asyncio.sleep(2) # Pauză între postări
+            else:
+                print(f"⏭️ Sărim peste duplicat: {titlu[:30]}...")
 
 if __name__ == "__main__":
     asyncio.run(main())
