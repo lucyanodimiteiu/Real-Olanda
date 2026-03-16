@@ -167,8 +167,8 @@ def preia_trafic_live():
         for obs in data.get('obstructions', []):
             obs_id = obs.get('obstructionId', 0)
             title = obs.get('title', '').lower()
-            length_km = obs.get('length', 0) / 1000.0
-            delay_min = obs.get('delay', 0.0)
+            length_km = (obs.get('length') or 0) / 1000.0
+            delay_min = float(obs.get('delay') or 0.0)
             
             # FILTRE CAO SOFER:
             # - Coloane > 1km sau intarzieri > 5 min
