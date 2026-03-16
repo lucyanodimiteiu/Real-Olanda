@@ -1,5 +1,5 @@
 import os
-import asyncio
+import time
 import hashlib
 import json
 import requests
@@ -25,7 +25,6 @@ BLACKLIST_FILE = "processed_links_olanda.txt"
 BLACKLIST_SET = set()
 SEMNATURA = "@real_live_by_luci"
 
-
 # ==========================================
 # GESTIONARE MEMORIE
 # ==========================================
@@ -40,10 +39,8 @@ def load_blacklist():
             print(f"⚠️ Eroare încărcare blacklist: {e}")
             BLACKLIST_SET = set()
 
-
 def is_blacklisted(h: str) -> bool:
     return h in BLACKLIST_SET
-
 
 def add_to_blacklist(h: str):
     if h not in BLACKLIST_SET:
@@ -54,29 +51,22 @@ def add_to_blacklist(h: str):
         except Exception as e:
             print(f"⚠️ Eroare scriere blacklist: {e}")
 
-
 def hash_text(text: str) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()
-
 
 # ==========================================
 # UTILITARE AI
 # ==========================================
 def clean_json_response(text: str) -> str:
-    """Curăță blocurile Markdown din răspunsul AI."""
-    # Elimină ```json la început și ``` la sfârșit
     cleaned = re.sub(r"^```json\s*", "", text).strip()
     cleaned = re.sub(r"```$", "", cleaned).strip()
     return cleaned
 
-
-async def proceseaza_cu_ai(titlu: str, descriere: str) -> Optional[Dict[str, Any]]:
-    """Procesează știrea cu DeepSeek AI."""
+def proceseaza_cu_ai(titlu: str, descriere: str) -> Optional[Dict[str, Any]]:
     if not DEEPSEEK_KEY:
         print("❌ Lipsă cheie API DeepSeek!")
         return None
 
-    # Curățăm input-ul pentru a evita probleme cu ghilimelele în JSON
     titlu_curat = titlu.replace('"', "'")[:200]
     desc_curat = (descriere or "Fără descriere").replace('"', "'")[:500]
 
@@ -117,17 +107,9 @@ Răspunde STRICT JSON cu formatul exact:
             return None
 
         continut_brut = data["choices"][0]["message"]["content"]
-        print(f"🤖 AI Response raw: {str(continut_brut)[:150]}...")
-
-        if not continut_brut or not continut_brut.strip():
-            print("⚠️ Răspuns AI gol")
-            return None
-
-        # Curățăm și parsăm JSON-ul
         continut_curat = clean_json_response(continut_brut)
         rezultat = json.loads(continut_curat)
 
-        # Validare câmpuri obligatorii
         if not all(k in rezultat for k in ["categorie", "emoji", "text_ro"]):
             print(f"⚠️ JSON incomplet: {rezultat.keys()}")
             return None
@@ -135,28 +117,22 @@ Răspunde STRICT JSON cu formatul exact:
         return rezultat
 
     except json.JSONDecodeError as e:
-        print(f"⚠️ Eroare parsare JSON: {e} | Conținut: {continut_brut[:200]}")
-        return None
-    except requests.exceptions.RequestException as e:
-        print(f"⚠️ Eroare request AI: {e}")
+        print(f"⚠️ Eroare parsare JSON: {e}")
         return None
     except Exception as e:
         print(f"⚠️ Eroare neașteptată AI: {e}")
         return None
 
-
 # ==========================================
 # TELEGRAM
 # ==========================================
-async def trimite_telegram(text_final: str) -> bool:
-    """Trimite mesaj pe Telegram. NU folosi html.escape() - Telegram suportă UTF-8 nativ."""
+def trimite_telegram(text_final: str) -> bool:
     if not TELEGRAM_TOKEN or not CANAL_DESTINATIE:
         print("❌ Lipsă configurare Telegram!")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-    # Trunchiază dacă e prea lung (limită Telegram: 4096 caractere)
     if len(text_final) > 4000:
         text_final = text_final[:3997] + "..."
 
@@ -178,18 +154,14 @@ async def trimite_telegram(text_final: str) -> bool:
         print(f"⚠️ Eroare trimitere Telegram: {e}")
         return False
 
-
 # ==========================================
 # MAIN
 # ==========================================
-async def main():
+def main():
     print(f"🚀 Pornire: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     if not all([DEEPSEEK_KEY, TELEGRAM_TOKEN, CANAL_DESTINATIE]):
-        print("❌ Configurație incompletă! Verifică variabilele de mediu:")
-        print(f"   - DEEPSEEK_API_KEY: {'✅' if DEEPSEEK_KEY else '❌'}")
-        print(f"   - TELEGRAM_BOT_TOKEN: {'✅' if TELEGRAM_TOKEN else '❌'}")
-        print(f"   - TELEGRAM_CHANNEL_ID: {'✅' if CANAL_DESTINATIE else '❌'}")
+        print("❌ Configurație incompletă! Verifică secretele pe GitHub.")
         return
 
     load_blacklist()
@@ -198,7 +170,6 @@ async def main():
 
     for idx, url in enumerate(RSS_FEEDS):
         print(f"\n📡 [{idx+1}/{len(RSS_FEEDS)}] Scanăm: {url}")
-
         try:
             feed = feedparser.parse(url)
         except Exception as e:
@@ -206,50 +177,33 @@ async def main():
             continue
 
         if not hasattr(feed, "entries") or not feed.entries:
-            print("   ⚠️ Feed gol sau invalid")
             continue
 
-        print(f"   📰 {len(feed.entries)} intrări găsite")
-
         for entry in feed.entries[:15]:
-            # Validare entry
-            if not hasattr(entry, "title") or not hasattr(entry, "link"):
-                continue
-
-            titlu = entry.title
-            link = entry.link
-
+            titlu = getattr(entry, "title", None)
+            link = getattr(entry, "link", None)
             if not link or not titlu:
                 continue
 
             h = hash_text(link)
-
             if is_blacklisted(h):
-                print(f"   ⏭️ Sărit (duplicat): {titlu[:50]}...")
                 continue
 
             print(f"   🔎 Știre nouă: {titlu[:60]}...")
             total_procesate += 1
 
-            # Procesare AI
-            descriere = (
-                getattr(entry, "description", "")
-                or getattr(entry, "summary", "")
-                or "Fără descriere"
-            )
-            res = await proceseaza_cu_ai(titlu, descriere)
+            descriere = getattr(entry, "description", "") or getattr(entry, "summary", "") or "Fără descriere"
+            res = proceseaza_cu_ai(titlu, descriere)
 
             if not res:
                 print("   ❌ Skipped (eroare AI)")
-                await asyncio.sleep(1)
+                time.sleep(1)
                 continue
 
-            # Construire mesaj - FĂRĂ html.escape()! Telegram înțelege UTF-8 perfect.
             text_ro = res.get("text_ro", "Eroare traducere")
             categorie = res.get("categorie", "#Diverse")
             emoji = res.get("emoji", "📰")
 
-            # Doar link-ul și semnătura sunt hardcodate, restul vine de la AI curat
             postare = (
                 f"{emoji} <b>{categorie}</b>\n\n"
                 f"{text_ro}\n\n"
@@ -257,25 +211,23 @@ async def main():
                 f"<i>{SEMNATURA}</i>"
             )
 
-            # Trimitere
-            if await trimite_telegram(postare):
+            if trimite_telegram(postare):
                 add_to_blacklist(h)
                 total_postate += 1
                 print("   ✅ Postat!")
-                await asyncio.sleep(2)  # Rate limit între postări
+                time.sleep(2)
             else:
                 print("   ❌ Eroare trimitere Telegram")
 
-            # Rate limit între procesări AI
-            await asyncio.sleep(1)
+            time.sleep(1)
 
-        # Pauză între feed-uri
         if idx < len(RSS_FEEDS) - 1:
-            await asyncio.sleep(2)
+            time.sleep(2)
 
     print(f"\n🏁 Finalizat: {total_postate}/{total_procesate} știri postate")
-    print(f"   Total în blacklist: {len(BLACKLIST_SET)}")
-
 
 if __name__ == "__main__":
-    asyncio.run(main())\n\ndef get_bot_status_message():\n    return "Bot activ si functional. Sistem Olanda online"\n
+    main()
+
+def get_bot_status_message():
+    return "Bot activ si functional. Sistem Olanda online"
