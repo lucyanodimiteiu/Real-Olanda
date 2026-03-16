@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 
 # ==========================================
-# CONFIGURAȚII (Asistent Șoferi NL - v2.1)
+# CONFIGURAȚII (Asistent Șoferi NL - CLOUD WORKER)
 # ==========================================
 DEEPSEEK_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -27,6 +27,7 @@ BLACKLIST_FILE = "processed_links_olanda.txt"
 DB_PATH = "memorie_stiri_olanda.db"
 BLACKLIST_SET = set()
 SEMNATURA = "@real_live_by_luci"
+VERIFY_INTERVAL = 60 # Secunde intre verificari
 
 # ==========================================
 # GESTIONARE MEMORIE URL (Nivel 1)
@@ -84,7 +85,6 @@ def salveaza_stire_in_memorie(text_rezumat):
         c.execute('INSERT INTO stiri_recente (text_rezumat, data_postare) VALUES (?, ?)', 
                   (text_rezumat, datetime.now().isoformat()))
         conn.commit()
-        # Pastram baza de date curata (doar ultimele 50)
         c.execute('DELETE FROM stiri_recente WHERE id NOT IN (SELECT id FROM stiri_recente ORDER BY id DESC LIMIT 50)')
         conn.commit()
     except Exception as e:
@@ -105,7 +105,6 @@ def proceseaza_cu_ai(titlu: str, descriere: str, texte_vechi: list) -> Optional[
 
     titlu_curat = titlu.replace('"', "'")[:200]
     desc_curat = (descriere or "Fără descriere").replace('"', "'")[:600]
-    
     context_vechi = "\n".join([f"- {t}" for t in texte_vechi]) if texte_vechi else "Nicio stire recenta."
 
     prompt = f"""Ești un asistent inteligent pentru un șofer profesionist de camion în Olanda.
@@ -134,7 +133,7 @@ Răspunde STRICT JSON:
             json={
                 "model": "deepseek-chat",
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.1, # Scazut pentru consistenta logica mai mare
+                "temperature": 0.1, 
                 "response_format": {"type": "json_object"}
             },
             headers=headers, timeout=60
@@ -159,56 +158,57 @@ def trimite_telegram(text_final: str) -> bool:
     except: return False
 
 # ==========================================
-# MAIN
+# MAIN LOOP (WORKER MODE)
 # ==========================================
 def main():
-    print(f"🚀 Pornire Asistent NL v2.1 (Anti-Duplicat Semantic): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    if not all([DEEPSEEK_KEY, TELEGRAM_TOKEN, CANAL_DESTINATIE]): return
+    print(f"🚀 Pornire Asistent NL WORKER v3.0: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if not all([DEEPSEEK_KEY, TELEGRAM_TOKEN, CANAL_DESTINATIE]): 
+        print("❌ Configurație incompletă! Setati DEEPSEEK_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID.")
+        return
 
     init_db()
     load_blacklist()
     
-    # Incarcam in memorie ultimele subiecte discutate pentru a le da AI-ului ca referinta
-    stiri_vechi_db = preia_stiri_vechi(15) 
-    
-    for url in RSS_FEEDS:
-        print(f"\n📡 Scanăm: {url}")
-        try: feed = feedparser.parse(url)
-        except: continue
+    while True:
+        print(f"🔄 Verificare fluxuri la {datetime.now().strftime('%H:%M:%S')}...")
+        stiri_vechi_db = preia_stiri_vechi(15) 
+        
+        for url in RSS_FEEDS:
+            try: feed = feedparser.parse(url)
+            except: continue
 
-        if not hasattr(feed, "entries"): continue
+            if not hasattr(feed, "entries"): continue
 
-        for entry in feed.entries[:10]:
-            titlu = getattr(entry, "title", None)
-            link = getattr(entry, "link", None)
-            if not link or not titlu: continue
+            for entry in feed.entries[:5]: # Verificam doar ultimele 5 stiri pentru a fi rapizi
+                titlu = getattr(entry, "title", None)
+                link = getattr(entry, "link", None)
+                if not link or not titlu: continue
 
-            h = hash_text(link)
-            if is_blacklisted(h): continue # Filtru Nivel 1 (URL identic)
+                h = hash_text(link)
+                if is_blacklisted(h): continue 
 
-            descriere = getattr(entry, "description", "") or getattr(entry, "summary", "")
-            
-            # Filtru Nivel 2 (Semantic)
-            res = proceseaza_cu_ai(titlu, descriere, stiri_vechi_db)
+                descriere = getattr(entry, "description", "") or getattr(entry, "summary", "")
+                res = proceseaza_cu_ai(titlu, descriere, stiri_vechi_db)
 
-            if res:
-                if res.get("categorie") == "IGNORE":
-                    print("   ❌ Ignorat (Geografie/Irelevant)")
-                    add_to_blacklist(h)
-                elif res.get("duplicat", False):
-                    print("   ♻️ Ignorat (Duplicat Semantic detectat de AI!)")
-                    add_to_blacklist(h) # Il punem in blacklist ca sa nu il mai analizam data viitoare
-                else:
-                    text_rezumat = res.get('text_ro', 'Fara text')
-                    postare = f"{res.get('emoji', '📌')} <b>{res.get('categorie')}</b>\n\n{text_rezumat}\n\n🔗 <a href='{link}'>Sursa Originală</a>\n\n<i>{SEMNATURA}</i>"
-                    
-                    if trimite_telegram(postare):
+                if res:
+                    if res.get("categorie") == "IGNORE":
                         add_to_blacklist(h)
-                        salveaza_stire_in_memorie(text_rezumat) # Salvam in memorie pt stirile viitoare
-                        stiri_vechi_db.insert(0, text_rezumat)  # Actualizam si memoria in rularea curenta
-                        print(f"   ✅ Postat: {titlu[:30]}")
-                        time.sleep(2)
-            time.sleep(1)
+                    elif res.get("duplicat", False):
+                        add_to_blacklist(h) 
+                    else:
+                        text_rezumat = res.get('text_ro', 'Fara text')
+                        postare = f"{res.get('emoji', '📌')} <b>{res.get('categorie')}</b>\n\n{text_rezumat}\n\n🔗 <a href='{link}'>Sursa Originală</a>\n\n<i>{SEMNATURA}</i>"
+                        
+                        if trimite_telegram(postare):
+                            add_to_blacklist(h)
+                            salveaza_stire_in_memorie(text_rezumat) 
+                            stiri_vechi_db.insert(0, text_rezumat)  
+                            print(f"   ✅ Postat: {titlu[:30]}...")
+                            time.sleep(2)
+                time.sleep(1)
+        
+        print(f"💤 Asteptare {VERIFY_INTERVAL} secunde pana la urmatoarea verificare...")
+        time.sleep(VERIFY_INTERVAL)
 
 if __name__ == "__main__":
     main()
