@@ -6,20 +6,19 @@ import sqlite3
 import requests
 import feedparser
 import re
+import threading
 from datetime import datetime
 from typing import Optional, Dict, Any
-import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ==========================================
-# CONFIGURAȚII (Asistent Șoferi NL - LIVE RADAR)
+# CONFIGURAȚII (Asistent Șoferi NL - LIVE RADAR v4.1 Fallback)
 # ==========================================
 DEEPSEEK_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CANAL_DESTINATIE = os.getenv("TELEGRAM_CHANNEL_ID")
 PORT = int(os.getenv("PORT", 10000))
 
-# Surse pentru stiri (Rijkswaterstaat RSS a fost inlocuit de API-ul live mai jos)
 RSS_FEEDS = [
     "https://nos.nl/export/rss/economie.xml",
     "https://www.ttm.nl/feed/",
@@ -30,7 +29,7 @@ BLACKLIST_FILE = "processed_links_olanda.txt"
 DB_PATH = "memorie_stiri_olanda.db"
 BLACKLIST_SET = set()
 SEMNATURA = "@real_live_by_luci"
-VERIFY_INTERVAL = 60 # Secunde intre verificari
+VERIFY_INTERVAL = 60 
 
 # ==========================================
 # DUMMY WEB SERVER
@@ -40,7 +39,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        self.wfile.write(b"Olanda Bot: Online si Monitorizeaza Traficul LIVE.")
+        self.wfile.write(b"Olanda Bot: Online si Monitorizeaza Traficul LIVE (Fallback Activ).")
 
 def run_server():
     server = HTTPServer(('0.0.0.0', PORT), SimpleHandler)
@@ -48,7 +47,7 @@ def run_server():
     server.serve_forever()
 
 # ==========================================
-# GESTIONARE MEMORIE (Nivel 1 & 2)
+# GESTIONARE MEMORIE
 # ==========================================
 def load_blacklist():
     global BLACKLIST_SET
@@ -103,12 +102,11 @@ def proceseaza_stire_ai(titlu: str, descriere: str, texte_vechi: list, sursa_tip
     context_vechi = "\n".join([f"- {t}" for t in texte_vechi]) if texte_vechi else "Nicio stire recenta."
     
     if sursa_tip == "TRAFIC_LIVE":
-        prompt = f"""Ești un asistent inteligent pentru un șofer profesionist de camion în Olanda.
-A primit următoarea alertă LIVE din dispecerat.
-Tradu și formatează clar în limba română (stare trafic, locație, timpi sau km). 
-DEDUPLICARE: Daca evenimentul a fost deja anuntat în ȘTIRI VECHI, pune "duplicat": true.
-Categorii permise: #Trafic_Drumuri.
-Emoji permis: 🚧 (lucrări), ⛔ (închis), 🚗 (coloană), ⚠️ (incident).
+        prompt = f"""Ești asistent pentru șoferi profesioniști în Olanda. Ai o alertă LIVE.
+Tradu și formatează clar în română. 
+DEDUPLICARE: Daca e același eveniment din ȘTIRI VECHI, pune "duplicat": true.
+Categorii: #Trafic_Drumuri.
+Emoji: 🚧, ⛔, 🚗, ⚠️.
 
 ȘTIRI VECHI:
 {context_vechi}
@@ -120,13 +118,11 @@ DATE TRAFIC LIVE:
 Răspunde STRICT JSON:
 {{"categorie": "#Trafic_Drumuri", "emoji": "⛔", "text_ro": "Rezumat alertă...", "duplicat": false}}"""
     else:
-        prompt = f"""Ești un asistent inteligent pentru un șofer profesionist de camion în Olanda.
-Analizează ȘTIREA NOUĂ. 
-1. Dacă NU are legătură cu Olanda (sau transportul aferent), setează "IGNORE".
-2. DEDUPLICARE: Compară cu ȘTIRILE VECHI. Dacă e același subiect major, setează "duplicat": true.
-3. Dacă e relevantă, tradu și rezumă în română evidențiind impactul.
+        prompt = f"""Ești asistent pentru șoferi profesioniști în Olanda. Analizează ȘTIREA NOUĂ. 
+1. Dacă NU are legătură cu Olanda/transport, pune "IGNORE".
+2. DEDUPLICARE: Compară cu ȘTIRILE VECHI. Dacă e duplicat semantic, pune "duplicat": true.
+3. Dacă e relevantă, tradu/rezumă în română.
 Categorii: #Legislatie_Taxe, #Sindicate_CAO, #Economie_Logistica, IGNORE.
-Emoji: ⚖️, 👷, 💶, 📌.
 
 ȘTIRI VECHI:
 {context_vechi}
@@ -140,12 +136,15 @@ Răspunde STRICT JSON:
 
     headers = {"Authorization": f"Bearer {DEEPSEEK_KEY}", "Content-Type": "application/json"}
     try:
+        # TIMEOUT STRICT: 10 SECUNDE. Daca pica, intram in Fallback Mode.
         resp = requests.post("https://api.deepseek.com/v1/chat/completions",
             json={"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.1, "response_format": {"type": "json_object"}},
-            headers=headers, timeout=60)
+            headers=headers, timeout=10)
         resp.raise_for_status()
         return json.loads(clean_json_response(resp.json()["choices"][0]["message"]["content"]))
-    except Exception as e: print(f"⚠️ Eroare AI: {e}"); return None
+    except Exception as e: 
+        print(f"⚠️ Eroare/Timeout AI ({sursa_tip}): {e}")
+        return None
 
 # ==========================================
 # TELEGRAM
@@ -167,13 +166,13 @@ def preia_trafic_live():
         for obs in data.get('obstructions', []):
             obs_id = obs.get('obstructionId', 0)
             title = obs.get('title', '').lower()
-            length_km = (obs.get('length') or 0) / 1000.0
+            
+            # PROTECTIE NULLTYPES: Orice Lipsa De Date = 0.0
+            length_km = (obs.get('length') or 0.0) / 1000.0
             delay_min = float(obs.get('delay') or 0.0)
             
-            # FILTRE CAO SOFER:
-            # - Coloane > 1km sau intarzieri > 5 min
+            # FILTRE CAO SOFER
             is_jam = any(kw in title for kw in ['langzaam', 'stilstaand', 'file', 'verkeer'])
-            # - Drumuri inchise complet/partial, benzi, lucrari
             is_closure = any(kw in title for kw in ['afgesloten', 'omleiding', 'afsluiting'])
             is_roadwork = any(kw in title for kw in ['werkzaamheden', 'onderhoud'])
             is_future = not obs.get('isCurrent', True)
@@ -188,7 +187,7 @@ def preia_trafic_live():
 # WORKER LOOP
 # ==========================================
 def worker_loop():
-    print(f"🚀 Pornire Radar Live & Știri NL v4.0: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🚀 Pornire Radar Live & Știri NL v4.1 (FALLBACK ACTIV): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     if not all([DEEPSEEK_KEY, TELEGRAM_TOKEN, CANAL_DESTINATIE]): 
         print("❌ Configurație incompletă!")
         return
@@ -197,7 +196,7 @@ def worker_loop():
     load_blacklist()
     
     while True:
-        print(f"🔄 Verificare Radar Trafic & Fluxuri la {datetime.now().strftime('%H:%M:%S')}...")
+        print(f"🔄 Verificare Radar Trafic la {datetime.now().strftime('%H:%M:%S')}...")
         stiri_vechi_db = preia_stiri_vechi(15) 
         
         # 1. SCANARE TRAFIC LIVE
@@ -206,17 +205,15 @@ def worker_loop():
             obs_id = f"RWS_LIVE_{obs.get('obstructionId')}"
             if is_blacklisted(obs_id): continue
             
-            # Formatam datele pentru AI
             t_titlu = f"[{obs.get('title', 'Alerte')}] Drum: {obs.get('roadNumber', '-')} | Directia: {obs.get('directionText', '-')}"
-            
             timp_info = ""
-            if not obs.get('isCurrent', True):
-                timp_info = f"\nPLANIFICAT: {obs.get('timeStart', '')} - {obs.get('timeEnd', '')}"
-            
-            t_desc = f"Locatie: {obs.get('locationText', '-')}\nIntarziere: {obs.get('delay', 0.0)} minute\nLungime: {obs.get('length', 0)/1000.0} km\nDetalii: {obs.get('description', '')} {timp_info}"
+            if not obs.get('isCurrent', True): timp_info = f"\nPLANIFICAT: {obs.get('timeStart', '')} - {obs.get('timeEnd', '')}"
+            t_desc = f"Locatie: {obs.get('locationText', '-')}\nIntarziere: {obs.get('delay') or 0.0} minute\nLungime: {(obs.get('length') or 0)/1000.0} km\nDetalii: {obs.get('description', '')} {timp_info}"
 
             res = proceseaza_stire_ai(t_titlu, t_desc, stiri_vechi_db, sursa_tip="TRAFIC_LIVE")
+            
             if res:
+                # CAZ FERICIT: AI-ul a tradus la timp
                 if res.get("duplicat", False):
                     add_to_blacklist(obs_id)
                 else:
@@ -227,18 +224,26 @@ def worker_loop():
                         add_to_blacklist(obs_id)
                         salveaza_stire_in_memorie(text_rezumat)
                         stiri_vechi_db.insert(0, text_rezumat)
-                        print(f"   ✅ [TRAFIC LIVE] Alerta trimisa pe drumul {obs.get('roadNumber', '')}")
+                        print(f"   ✅ [TRAFIC LIVE AI] Alerta trimisa pe drumul {obs.get('roadNumber', '')}")
                         time.sleep(2)
+            else:
+                # CAZ DEZASTRU: AI-ul a cazut (Timeout). Trecem pe BYPASS/FALLBACK de urgenta
+                postare_fallback = f"⚠️ <b>#Trafic_URGENT (Radar Raw)</b>\n\n{t_titlu}\n{t_desc}\n\n📍 <i>Rijkswaterstaat LIVE (Bypass Translator din cauza intarzierii AI)</i>\n\n<i>{SEMNATURA}</i>"
+                if trimite_telegram(postare_fallback):
+                    add_to_blacklist(obs_id)
+                    salveaza_stire_in_memorie(f"Radar Raw pe {obs.get('roadNumber', '')}")
+                    print(f"   🚨 [FALLBACK EXECUTAT] Alerta RAW trimisa pe drumul {obs.get('roadNumber', '')}")
+                    time.sleep(2)
             time.sleep(1)
         
-        # 2. SCANARE STIRI RSS (Logistica, Economie, CAO)
+        # 2. SCANARE STIRI RSS (Astea nu au fallback, daca pica AI-ul, pur si simplu asteapta ciclul urmator)
         for url in RSS_FEEDS:
             try: feed = feedparser.parse(url)
             except: continue
 
             if not hasattr(feed, "entries"): continue
 
-            for entry in feed.entries[:3]: # Max 3 pe iteratie ca sa fim cat mai near-realtime pe trafic
+            for entry in feed.entries[:3]: 
                 titlu = getattr(entry, "title", None)
                 link = getattr(entry, "link", None)
                 if not link or not titlu: continue
@@ -264,12 +269,8 @@ def worker_loop():
                             time.sleep(2)
                 time.sleep(1)
         
-        # Sleep for latency control (1 minut)
         time.sleep(VERIFY_INTERVAL)
 
-# ==========================================
-# PUNCT DE INTRARE (MAIN)
-# ==========================================
 if __name__ == "__main__":
     worker_thread = threading.Thread(target=worker_loop, daemon=True)
     worker_thread.start()
