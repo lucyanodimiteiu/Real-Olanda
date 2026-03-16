@@ -9,16 +9,18 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 
 # ==========================================
-# CONFIGURAȚII
+# CONFIGURAȚII (Asistent Șoferi NL)
 # ==========================================
 DEEPSEEK_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CANAL_DESTINATIE = os.getenv("TELEGRAM_CHANNEL_ID")
 
+# Noi surse dedicate: Trafic oficial, Logistică, Economie NL
 RSS_FEEDS = [
-    "https://www.nu.nl/rss/Algemeen",
-    "https://nos.nl/export/rss/nederland.xml",
-    "https://www.anwb.nl/feeds/verkeersinformatie",
+    "https://www.rijkswaterstaat.nl/rss",             # Alerte Rijkswaterstaat (drumuri/infrastructură)
+    "https://nos.nl/export/rss/economie.xml",         # NOS Economie (Taxe, Legi, Belasting)
+    "https://www.ttm.nl/feed/",                       # Totaal Transactie Management (Transport NL)
+    "https://www.nu.nl/rss/Economie"                  # NU.nl Economie/Muncă
 ]
 
 BLACKLIST_FILE = "processed_links_olanda.txt"
@@ -34,7 +36,6 @@ def load_blacklist():
         try:
             with open(BLACKLIST_FILE, "r", encoding="utf-8") as f:
                 BLACKLIST_SET = set(line.strip() for line in f if line.strip())
-            print(f"📚 Blacklist încărcat: {len(BLACKLIST_SET)} intrări")
         except Exception as e:
             print(f"⚠️ Eroare încărcare blacklist: {e}")
             BLACKLIST_SET = set()
@@ -48,8 +49,7 @@ def add_to_blacklist(h: str):
         try:
             with open(BLACKLIST_FILE, "a", encoding="utf-8") as f:
                 f.write(h + "\n")
-        except Exception as e:
-            print(f"⚠️ Eroare scriere blacklist: {e}")
+        except: pass
 
 def hash_text(text: str) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()
@@ -63,27 +63,25 @@ def clean_json_response(text: str) -> str:
     return cleaned
 
 def proceseaza_cu_ai(titlu: str, descriere: str) -> Optional[Dict[str, Any]]:
-    if not DEEPSEEK_KEY:
-        print("❌ Lipsă cheie API DeepSeek!")
-        return None
+    if not DEEPSEEK_KEY: return None
 
     titlu_curat = titlu.replace('"', "'")[:200]
-    desc_curat = (descriere or "Fără descriere").replace('"', "'")[:500]
+    desc_curat = (descriere or "Fără descriere").replace('"', "'")[:600]
 
-    prompt = f"""Ești un editor de știri OSINT. Traduce și rezumă știrea în română (stil Reuters).
-Alege o categorie: #Transport, #Vreme, #Politica, #Economie, #Social sau #Diverse.
-Alege un emoji relevant.
+    # Prompt specializat pentru soferi in NL
+    prompt = f"""Ești un asistent inteligent pentru un șofer profesionist de camion (contract CAO) în Olanda.
+Analizează știrea. Dacă știrea NU are legătură cu Olanda (sau cu impact direct asupra transportului spre/dinspre Olanda), setează categoria la "IGNORE".
+Dacă are legătură, tradu și rezumă știrea în română, evidențiind impactul pentru șoferi (accidente, drumuri închise, legi noi, taxe, reguli sindicale).
+Categorii permise STRICT: #Trafic_Drumuri, #Legislatie_Taxe, #Sindicate_CAO, #Economie_Logistica, sau IGNORE.
+Alege un emoji relevant (ex: 🚛, ⚖️, 👷, 💶).
 
 Titlu: {titlu_curat}
 Descriere: {desc_curat}
 
-Răspunde STRICT JSON cu formatul exact:
-{{"categorie": "#Diverse", "emoji": "📰", "text_ro": "Titlu Tradus - Rezumat maxim 2 propoziții"}}"""
+Răspunde STRICT JSON:
+{{"categorie": "#Trafic_Drumuri", "emoji": "🚛", "text_ro": "Rezumat clar și util în max 2 propoziții."}}"""
 
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_KEY}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Authorization": f"Bearer {DEEPSEEK_KEY}", "Content-Type": "application/json"}
 
     try:
         resp = requests.post(
@@ -91,143 +89,80 @@ Răspunde STRICT JSON cu formatul exact:
             json={
                 "model": "deepseek-chat",
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3,
-                "max_tokens": 300,
-                "response_format": {"type": "json_object"},
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"}
             },
-            headers=headers,
-            timeout=60,
+            headers=headers, timeout=60
         )
-
         resp.raise_for_status()
         data = resp.json()
-
-        if "choices" not in data or not data["choices"]:
-            print("⚠️ Răspuns AI invalid (fără choices)")
-            return None
-
         continut_brut = data["choices"][0]["message"]["content"]
-        continut_curat = clean_json_response(continut_brut)
-        rezultat = json.loads(continut_curat)
-
-        if not all(k in rezultat for k in ["categorie", "emoji", "text_ro"]):
-            print(f"⚠️ JSON incomplet: {rezultat.keys()}")
-            return None
-
+        rezultat = json.loads(clean_json_response(continut_brut))
+        
+        if rezultat.get("categorie") == "IGNORE":
+            return None # Ignoram stirile irelevante geografic
+            
         return rezultat
-
-    except json.JSONDecodeError as e:
-        print(f"⚠️ Eroare parsare JSON: {e}")
-        return None
     except Exception as e:
-        print(f"⚠️ Eroare neașteptată AI: {e}")
+        print(f"⚠️ Eroare AI: {e}")
         return None
 
 # ==========================================
 # TELEGRAM
 # ==========================================
 def trimite_telegram(text_final: str) -> bool:
-    if not TELEGRAM_TOKEN or not CANAL_DESTINATIE:
-        print("❌ Lipsă configurare Telegram!")
-        return False
-
+    if not TELEGRAM_TOKEN or not CANAL_DESTINATIE: return False
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    if len(text_final) > 4000:
-        text_final = text_final[:3997] + "..."
-
     payload = {
         "chat_id": CANAL_DESTINATIE,
-        "text": text_final,
+        "text": text_final[:3997],
         "parse_mode": "HTML",
         "disable_web_page_preview": False,
     }
-
     try:
         resp = requests.post(url, json=payload, timeout=15)
-        if resp.status_code == 200:
-            return True
-        else:
-            print(f"⚠️ Eroare Telegram: {resp.status_code} - {resp.text[:200]}")
-            return False
-    except Exception as e:
-        print(f"⚠️ Eroare trimitere Telegram: {e}")
-        return False
+        return resp.status_code == 200
+    except: return False
 
 # ==========================================
 # MAIN
 # ==========================================
 def main():
-    print(f"🚀 Pornire: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
+    print(f"🚀 Pornire Asistent NL: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     if not all([DEEPSEEK_KEY, TELEGRAM_TOKEN, CANAL_DESTINATIE]):
-        print("❌ Configurație incompletă! Verifică secretele pe GitHub.")
+        print("❌ Configurație incompletă!")
         return
 
     load_blacklist()
-    total_procesate = 0
-    total_postate = 0
+    
+    for url in RSS_FEEDS:
+        print(f"\n📡 Scanăm: {url}")
+        try: feed = feedparser.parse(url)
+        except: continue
 
-    for idx, url in enumerate(RSS_FEEDS):
-        print(f"\n📡 [{idx+1}/{len(RSS_FEEDS)}] Scanăm: {url}")
-        try:
-            feed = feedparser.parse(url)
-        except Exception as e:
-            print(f"⚠️ Eroare parsare feed {url}: {e}")
-            continue
+        if not hasattr(feed, "entries"): continue
 
-        if not hasattr(feed, "entries") or not feed.entries:
-            continue
-
-        for entry in feed.entries[:15]:
+        for entry in feed.entries[:10]:
             titlu = getattr(entry, "title", None)
             link = getattr(entry, "link", None)
-            if not link or not titlu:
-                continue
+            if not link or not titlu: continue
 
             h = hash_text(link)
-            if is_blacklisted(h):
-                continue
+            if is_blacklisted(h): continue
 
-            print(f"   🔎 Știre nouă: {titlu[:60]}...")
-            total_procesate += 1
-
-            descriere = getattr(entry, "description", "") or getattr(entry, "summary", "") or "Fără descriere"
+            descriere = getattr(entry, "description", "") or getattr(entry, "summary", "")
             res = proceseaza_cu_ai(titlu, descriere)
 
-            if not res:
-                print("   ❌ Skipped (eroare AI)")
-                time.sleep(1)
-                continue
-
-            text_ro = res.get("text_ro", "Eroare traducere")
-            categorie = res.get("categorie", "#Diverse")
-            emoji = res.get("emoji", "📰")
-
-            postare = (
-                f"{emoji} <b>{categorie}</b>\n\n"
-                f"{text_ro}\n\n"
-                f"🔗 <a href='{link}'>Sursa Originală</a>\n\n"
-                f"<i>{SEMNATURA}</i>"
-            )
-
-            if trimite_telegram(postare):
-                add_to_blacklist(h)
-                total_postate += 1
-                print("   ✅ Postat!")
-                time.sleep(2)
+            if res and res.get("categorie") != "IGNORE":
+                postare = f"{res.get('emoji', '📌')} <b>{res.get('categorie')}</b>\n\n{res.get('text_ro')}\n\n🔗 <a href='{link}'>Sursa Originală</a>\n\n<i>{SEMNATURA}</i>"
+                if trimite_telegram(postare):
+                    add_to_blacklist(h)
+                    print(f"   ✅ Postat: {titlu[:30]}")
+                    time.sleep(2)
             else:
-                print("   ❌ Eroare trimitere Telegram")
-
+                add_to_blacklist(h) # Punem in blacklist si ce am ignorat ca sa nu intrebam AI-ul de 100 de ori
+                print("   ❌ Ignorat (Filtru AI)")
             time.sleep(1)
-
-        if idx < len(RSS_FEEDS) - 1:
-            time.sleep(2)
-
-    print(f"\n🏁 Finalizat: {total_postate}/{total_procesate} știri postate")
 
 if __name__ == "__main__":
     main()
-
-def get_bot_status_message():
-    return "Bot activ si functional. Sistem Olanda online"
