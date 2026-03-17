@@ -1,4 +1,7 @@
 import os
+import sys
+# Fortam flush-ul logurilor pentru Render
+sys.stdout.reconfigure(line_buffering=True)
 import time
 import hashlib
 import json
@@ -152,9 +155,15 @@ Răspunde STRICT JSON:
 def trimite_telegram(text_final: str) -> bool:
     if not TELEGRAM_TOKEN or not CANAL_DESTINATIE: return False
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try: return requests.post(url, json={"chat_id": CANAL_DESTINATIE, "text": text_final[:3997], "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=15).status_code == 200
-    except: return False
-
+    try:
+        r = requests.post(url, json={"chat_id": CANAL_DESTINATIE, "text": text_final[:3997], "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=15)
+        if r.status_code != 200:
+            print(f"❌ Eroare API Telegram ({r.status_code}): {r.text}")
+            return False
+        return True
+    except Exception as e:
+        print(f"❌ Exceptie trimitere Telegram: {e}")
+        return False
 # ==========================================
 # RADAR TRAFIC LIVE (API RIJKSWATERSTAAT)
 # ==========================================
@@ -189,7 +198,10 @@ def preia_trafic_live():
 def worker_loop():
     print(f"🚀 Pornire Radar Live & Știri NL v4.1 (FALLBACK ACTIV): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     if not all([DEEPSEEK_KEY, TELEGRAM_TOKEN, CANAL_DESTINATIE]): 
-        print("❌ Configurație incompletă!")
+        print("❌ EROARE CRITICĂ: Configurație incompletă!")
+        print(f"DEEPSEEK_API_KEY prezent: {'DA' if DEEPSEEK_KEY else 'NU'}")
+        print(f"TELEGRAM_BOT_TOKEN prezent: {'DA' if TELEGRAM_TOKEN else 'NU'}")
+        print(f"TELEGRAM_CHANNEL_ID prezent: {'DA' if CANAL_DESTINATIE else 'NU'}")
         return
 
     init_db()
