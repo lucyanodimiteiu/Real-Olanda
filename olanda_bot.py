@@ -208,80 +208,87 @@ def worker_loop():
     load_blacklist()
     
     while True:
-        print(f"🔄 Verificare Radar Trafic la {datetime.now().strftime('%H:%M:%S')}...")
-        stiri_vechi_db = preia_stiri_vechi(15) 
+        try:
+            print(f"🔄 Verificare Radar Trafic la {datetime.now().strftime('%H:%M:%S')}...")
+            stiri_vechi_db = preia_stiri_vechi(15) 
         
-        # 1. SCANARE TRAFIC LIVE
-        alerte_live = preia_trafic_live()
-        for obs in alerte_live:
-            obs_id = f"RWS_LIVE_{obs.get('obstructionId')}"
-            if is_blacklisted(obs_id): continue
+            # 1. SCANARE TRAFIC LIVE
+            alerte_live = preia_trafic_live()
+            for obs in alerte_live:
+                obs_id = f"RWS_LIVE_{obs.get('obstructionId')}"
+                if is_blacklisted(obs_id): continue
             
-            t_titlu = f"[{obs.get('title', 'Alerte')}] Drum: {obs.get('roadNumber', '-')} | Directia: {obs.get('directionText', '-')}"
-            timp_info = ""
-            if not obs.get('isCurrent', True): timp_info = f"\nPLANIFICAT: {obs.get('timeStart', '')} - {obs.get('timeEnd', '')}"
-            t_desc = f"Locatie: {obs.get('locationText', '-')}\nIntarziere: {obs.get('delay') or 0.0} minute\nLungime: {(obs.get('length') or 0)/1000.0} km\nDetalii: {obs.get('description', '')} {timp_info}"
+                t_titlu = f"[{obs.get('title', 'Alerte')}] Drum: {obs.get('roadNumber', '-')} | Directia: {obs.get('directionText', '-')}"
+                timp_info = ""
+                if not obs.get('isCurrent', True): timp_info = f"\nPLANIFICAT: {obs.get('timeStart', '')} - {obs.get('timeEnd', '')}"
+                t_desc = f"Locatie: {obs.get('locationText', '-')}\nIntarziere: {obs.get('delay') or 0.0} minute\nLungime: {(obs.get('length') or 0)/1000.0} km\nDetalii: {obs.get('description', '')} {timp_info}"
 
-            res = proceseaza_stire_ai(t_titlu, t_desc, stiri_vechi_db, sursa_tip="TRAFIC_LIVE")
+                res = proceseaza_stire_ai(t_titlu, t_desc, stiri_vechi_db, sursa_tip="TRAFIC_LIVE")
             
-            if res:
-                # CAZ FERICIT: AI-ul a tradus la timp
-                if res.get("duplicat", False):
-                    add_to_blacklist(obs_id)
-                else:
-                    text_rezumat = res.get('text_ro', 'Alerta trafic nespecificata')
-                    postare = f"{res.get('emoji', '⚠️')} <b>{res.get('categorie')}</b>\n\n{text_rezumat}\n\n📍 <i>Rijkswaterstaat Verkeersinfo LIVE</i>\n\n<i>{SEMNATURA}</i>"
-                    
-                    if trimite_telegram(postare):
-                        add_to_blacklist(obs_id)
-                        salveaza_stire_in_memorie(text_rezumat)
-                        stiri_vechi_db.insert(0, text_rezumat)
-                        print(f"   ✅ [TRAFIC LIVE AI] Alerta trimisa pe drumul {obs.get('roadNumber', '')}")
-                        time.sleep(2)
-            else:
-                # CAZ DEZASTRU: AI-ul a cazut (Timeout). Trecem pe BYPASS/FALLBACK de urgenta
-                postare_fallback = f"⚠️ <b>#Trafic_URGENT (Radar Raw)</b>\n\n{t_titlu}\n{t_desc}\n\n📍 <i>Rijkswaterstaat LIVE (Bypass Translator din cauza intarzierii AI)</i>\n\n<i>{SEMNATURA}</i>"
-                if trimite_telegram(postare_fallback):
-                    add_to_blacklist(obs_id)
-                    salveaza_stire_in_memorie(f"Radar Raw pe {obs.get('roadNumber', '')}")
-                    print(f"   🚨 [FALLBACK EXECUTAT] Alerta RAW trimisa pe drumul {obs.get('roadNumber', '')}")
-                    time.sleep(2)
-            time.sleep(1)
-        
-        # 2. SCANARE STIRI RSS (Astea nu au fallback, daca pica AI-ul, pur si simplu asteapta ciclul urmator)
-        for url in RSS_FEEDS:
-            try: feed = feedparser.parse(url)
-            except: continue
-
-            if not hasattr(feed, "entries"): continue
-
-            for entry in feed.entries[:3]: 
-                titlu = getattr(entry, "title", None)
-                link = getattr(entry, "link", None)
-                if not link or not titlu: continue
-
-                h = hash_text(link)
-                if is_blacklisted(h): continue 
-
-                descriere = getattr(entry, "description", "") or getattr(entry, "summary", "")
-                res = proceseaza_stire_ai(titlu, descriere, stiri_vechi_db, sursa_tip="RSS")
-
                 if res:
-                    if res.get("categorie") == "IGNORE" or res.get("duplicat", False):
-                        add_to_blacklist(h)
+                    # CAZ FERICIT: AI-ul a tradus la timp
+                    if res.get("duplicat", False):
+                        add_to_blacklist(obs_id)
                     else:
-                        text_rezumat = res.get('text_ro', 'Fara text')
-                        postare = f"{res.get('emoji', '📌')} <b>{res.get('categorie')}</b>\n\n{text_rezumat}\n\n🔗 <a href='{link}'>Sursa Originală</a>\n\n<i>{SEMNATURA}</i>"
-                        
+                        text_rezumat = res.get('text_ro', 'Alerta trafic nespecificata')
+                        postare = f"{res.get('emoji', '⚠️')} <b>{res.get('categorie')}</b>\n\n{text_rezumat}\n\n📍 <i>Rijkswaterstaat Verkeersinfo LIVE</i>\n\n<i>{SEMNATURA}</i>"
+                    
                         if trimite_telegram(postare):
-                            add_to_blacklist(h)
-                            salveaza_stire_in_memorie(text_rezumat) 
-                            stiri_vechi_db.insert(0, text_rezumat)  
-                            print(f"   ✅ [STIRE] Postat: {titlu[:30]}...")
+                            add_to_blacklist(obs_id)
+                            salveaza_stire_in_memorie(text_rezumat)
+                            stiri_vechi_db.insert(0, text_rezumat)
+                            print(f"   ✅ [TRAFIC LIVE AI] Alerta trimisa pe drumul {obs.get('roadNumber', '')}")
                             time.sleep(2)
+                else:
+                    # CAZ DEZASTRU: AI-ul a cazut (Timeout). Trecem pe BYPASS/FALLBACK de urgenta
+                    postare_fallback = f"⚠️ <b>#Trafic_URGENT (Radar Raw)</b>\n\n{t_titlu}\n{t_desc}\n\n📍 <i>Rijkswaterstaat LIVE (Bypass Translator din cauza intarzierii AI)</i>\n\n<i>{SEMNATURA}</i>"
+                    if trimite_telegram(postare_fallback):
+                        add_to_blacklist(obs_id)
+                        salveaza_stire_in_memorie(f"Radar Raw pe {obs.get('roadNumber', '')}")
+                        print(f"   🚨 [FALLBACK EXECUTAT] Alerta RAW trimisa pe drumul {obs.get('roadNumber', '')}")
+                        time.sleep(2)
                 time.sleep(1)
         
-        time.sleep(VERIFY_INTERVAL)
+            # 2. SCANARE STIRI RSS (Astea nu au fallback, daca pica AI-ul, pur si simplu asteapta ciclul urmator)
+            for url in RSS_FEEDS:
+                try: feed = feedparser.parse(url)
+                except: continue
+
+                if not hasattr(feed, "entries"): continue
+
+                for entry in feed.entries[:3]: 
+                    titlu = getattr(entry, "title", None)
+                    link = getattr(entry, "link", None)
+                    if not link or not titlu: continue
+
+                    h = hash_text(link)
+                    if is_blacklisted(h): continue 
+
+                    descriere = getattr(entry, "description", "") or getattr(entry, "summary", "")
+                    res = proceseaza_stire_ai(titlu, descriere, stiri_vechi_db, sursa_tip="RSS")
+
+                    if res:
+                        if res.get("categorie") == "IGNORE" or res.get("duplicat", False):
+                            add_to_blacklist(h)
+                        else:
+                            text_rezumat = res.get('text_ro', 'Fara text')
+                            postare = f"{res.get('emoji', '📌')} <b>{res.get('categorie')}</b>\n\n{text_rezumat}\n\n🔗 <a href='{link}'>Sursa Originală</a>\n\n<i>{SEMNATURA}</i>"
+                        
+                            if trimite_telegram(postare):
+                                add_to_blacklist(h)
+                                salveaza_stire_in_memorie(text_rezumat) 
+                                stiri_vechi_db.insert(0, text_rezumat)  
+                                print(f"   ✅ [STIRE] Postat: {titlu[:30]}...")
+                                time.sleep(2)
+                    time.sleep(1)
+        
+            time.sleep(VERIFY_INTERVAL)
+
+        except Exception as _e:
+            print(f"❌ EROARE CRITICĂ ÎN WORKER: {_e}")
+            import traceback
+            traceback.print_exc()
+            time.sleep(10)
 
 if __name__ == "__main__":
     worker_thread = threading.Thread(target=worker_loop, daemon=True)
