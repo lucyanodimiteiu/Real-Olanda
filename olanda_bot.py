@@ -515,10 +515,8 @@ def worker_loop():
 
                 # FILTRU: trimite doar daca are delay SAU coada SAU e accident/inchidere
                 emoji, categorie = determina_emoji_si_categorie(obs)
-               categorii_importante = ["#Accident", "#Control_Granita"]
-               are_impact = delay > 0 or queue > 0 or categorie in categorii_importante
-               if not are_impact:
-               continue
+              categorii_importante = ["#Accident", "#Control_Granita"]
+                are_impact = delay > 0 or queue > 0 or categorie in categorii_importante
                 if not are_impact:
                     continue
 
