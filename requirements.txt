@@ -4,5 +4,5 @@ python-dotenv
 beautifulsoup4
 deep-translator
 gTTS
-python-telegram-bot==20.8
+python-telegram-bot==21.3
 lxml
