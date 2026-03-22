@@ -13,6 +13,7 @@ import threading
 from datetime import datetime
 from typing import Optional, Dict, Any
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from deep_translator import GoogleTranslator
 
 # ==========================================
 # CONFIGURAȚII (Asistent Șoferi NL - LIVE RADAR v4.1 Fallback)
@@ -163,7 +164,7 @@ def trimite_telegram(text_final: str) -> bool:
         print(f"❌ Exceptie trimitere Telegram: {e}")
         return False
 # ==========================================
-# RADAR TRAFIC LIVE (API RIJKSWATERSTAAT)
+# RADAR TRAFIC LIVE (API RIJKSWATERSTAAT) - TOATE INFORMATIILE
 # ==========================================
 def preia_trafic_live():
     alerte = []
@@ -171,21 +172,7 @@ def preia_trafic_live():
     try:
         data = requests.get(url, timeout=15).json()
         for obs in data.get('obstructions', []):
-            obs_id = obs.get('obstructionId', 0)
-            title = obs.get('title', '').lower()
-            
-            # PROTECTIE NULLTYPES: Orice Lipsa De Date = 0.0
-            length_km = (obs.get('length') or 0.0) / 1000.0
-            delay_min = float(obs.get('delay') or 0.0)
-            
-            # FILTRE CAO SOFER
-            is_jam = any(kw in title for kw in ['langzaam', 'stilstaand', 'file', 'verkeer'])
-            is_closure = any(kw in title for kw in ['afgesloten', 'omleiding', 'afsluiting'])
-            is_roadwork = any(kw in title for kw in ['werkzaamheden', 'onderhoud'])
-            is_future = not obs.get('isCurrent', True)
-            
-            if (is_jam and (length_km >= 1.0 or delay_min >= 5.0)) or is_closure or is_roadwork or is_future:
-                alerte.append(obs)
+            alerte.append(obs) # Preluam TOT (radare, accidente, inchideri)
     except Exception as e:
         print(f"⚠️ Eroare API Rijkswaterstaat: {e}")
     return alerte
@@ -239,41 +226,82 @@ def worker_loop():
             print(f"🔄 Verificare Radar Trafic la {datetime.now().strftime('%H:%M:%S')}...")
             stiri_vechi_db = preia_stiri_vechi(15) 
         
-            # 1. SCANARE TRAFIC LIVE
+            # 1. SCANARE TRAFIC LIVE (CU GOOGLE TRANSLATOR, TOT CONTINUTUL)
             alerte_live = preia_trafic_live()
             for obs in alerte_live:
-                obs_id = f"RWS_LIVE_{obs.get('obstructionId')}"
-                if is_blacklisted(obs_id): continue
+                obs_id_raw = obs.get('obstructionId', '')
+                t_titlu_nl = obs.get('title', 'Alerte')
+                t_desc_nl = obs.get('description', '')
+                
+                # Protectie NULL ptr cifre
+                delay = float(obs.get('delay') or 0.0)
+                length = (obs.get('length') or 0.0) / 1000.0
+                
+                # Hashem delay-ul (rotunjit) ca sa primesti UPDATE-uri in timp real la trafic
+                # Ex: Daca o coada trece de la 5 la 10 minute, ID-ul se schimba putin si primesti noul mesaj.
+                obs_hash = f"RWS_{obs_id_raw}_{int(delay//10)}_{int(length//3)}" 
+                if is_blacklisted(obs_hash): continue
             
-                t_titlu = f"[{obs.get('title', 'Alerte')}] Drum: {obs.get('roadNumber', '-')} | Directia: {obs.get('directionText', '-')}"
+                # Hashtag pentru CAUTARE TELEGRAM (ex: #A2, #N3)
+                road_raw = str(obs.get('roadNumber', '')).strip()
+                road_hashtag = f"#{road_raw.replace(' ', '')}" if road_raw else "#TraseuNecunoscut"
+                
+                direction = obs.get('directionText', '-')
+                locatie = obs.get('locationText', '-')
+                
                 timp_info = ""
-                if not obs.get('isCurrent', True): timp_info = f"\nPLANIFICAT: {obs.get('timeStart', '')} - {obs.get('timeEnd', '')}"
-                t_desc = f"Locatie: {obs.get('locationText', '-')}\nIntarziere: {obs.get('delay') or 0.0} minute\nLungime: {(obs.get('length') or 0)/1000.0} km\nDetalii: {obs.get('description', '')} {timp_info}"
+                if not obs.get('isCurrent', True): timp_info = f"\n📅 <b>Planificat:</b> {obs.get('timeStart', '')} - {obs.get('timeEnd', '')}"
 
-                res = proceseaza_stire_ai(t_titlu, t_desc, stiri_vechi_db, sursa_tip="TRAFIC_LIVE")
-            
-                if res:
-                    # CAZ FERICIT: AI-ul a tradus la timp
-                    if res.get("duplicat", False):
-                        add_to_blacklist(obs_id)
-                    else:
-                        text_rezumat = res.get('text_ro', 'Alerta trafic nespecificata')
-                        postare = f"{res.get('emoji', '⚠️')} <b>{res.get('categorie')}</b>\n\n{text_rezumat}\n\n📍 <i>Rijkswaterstaat Verkeersinfo LIVE</i>\n\n<i>{SEMNATURA}</i>"
-                    
-                        if trimite_telegram(postare):
-                            add_to_blacklist(obs_id)
-                            salveaza_stire_in_memorie(text_rezumat)
-                            stiri_vechi_db.insert(0, text_rezumat)
-                            print(f"   ✅ [TRAFIC LIVE AI] Alerta trimisa pe drumul {obs.get('roadNumber', '')}")
-                            time.sleep(2)
-                else:
-                    # CAZ DEZASTRU: AI-ul a cazut (Timeout). Trecem pe BYPASS/FALLBACK de urgenta
-                    postare_fallback = f"⚠️ <b>#Trafic_URGENT (Radar Raw)</b>\n\n{t_titlu}\n{t_desc}\n\n📍 <i>Rijkswaterstaat LIVE (Bypass Translator din cauza intarzierii AI)</i>\n\n<i>{SEMNATURA}</i>"
-                    if trimite_telegram(postare_fallback):
-                        add_to_blacklist(obs_id)
-                        salveaza_stire_in_memorie(f"Radar Raw pe {obs.get('roadNumber', '')}")
-                        print(f"   🚨 [FALLBACK EXECUTAT] Alerta RAW trimisa pe drumul {obs.get('roadNumber', '')}")
-                        time.sleep(2)
+                # Bypass DeepSeek -> Google Translate Direct
+                try:
+                    t_titlu_ro = GoogleTranslator(source='nl', target='ro').translate(t_titlu_nl)
+                    t_desc_ro = GoogleTranslator(source='nl', target='ro').translate(t_desc_nl)
+                except Exception as e:
+                    print(f"⚠️ Eroare Google Translate: {e}")
+                    t_titlu_ro = t_titlu_nl
+                    t_desc_ro = t_desc_nl
+
+                # Determinare Emoji Inteligent dupa textul Raw olandez
+                raw_text_lower = f"{t_titlu_nl} {t_desc_nl}".lower()
+                emoji = "⚠️"
+                categorie = "#Alerte_Trafic"
+                
+                if any(kw in raw_text_lower for kw in ['ongeval', 'ongeluk', 'botsing']): 
+                    emoji = "💥"
+                    categorie = "#Accident"
+                elif any(kw in raw_text_lower for kw in ['flitser', 'camera', 'snelheid', 'controle']): 
+                    emoji = "📸"
+                    categorie = "#Radar_Camera"
+                elif any(kw in raw_text_lower for kw in ['werkzaamheden', 'onderhoud', 'afgesloten', 'dicht', 'afsluiting', 'dicht']): 
+                    emoji = "🚧"
+                    categorie = "#Lucrari_Drumuri"
+                elif any(kw in raw_text_lower for kw in ['langzaam', 'stilstaand', 'file', 'verkeer', 'vertraging']): 
+                    emoji = "🚗"
+                    categorie = "#Aglomeratie"
+                elif any(kw in raw_text_lower for kw in ['brug', 'open']): 
+                    emoji = "🌉"
+                    categorie = "#Pod_Deschis"
+
+                # Constructia Mesajului
+                postare = f"{emoji} <b>{categorie} {road_hashtag}</b>\n\n"
+                postare += f"🚨 <b>{t_titlu_ro.upper()}</b>\n"
+                if locatie and locatie != '-': postare += f"📍 <b>Locație:</b> {locatie}\n"
+                if direction and direction != '-': postare += f"🧭 <b>Direcție:</b> {direction}\n"
+                
+                if delay > 0: postare += f"⏳ <b>Întârziere:</b> {int(delay)} minute\n"
+                if length > 0: postare += f"📏 <b>Lungime coadă:</b> {length:.1f} km\n"
+                
+                postare += f"\n📝 <b>Detalii:</b> {t_desc_ro}"
+                if timp_info: postare += f"\n{timp_info}"
+                
+                postare += f"\n\n📍 <i>Rijkswaterstaat LIVE Radar</i>\n<i>{SEMNATURA}</i>"
+
+                if trimite_telegram(postare):
+                    add_to_blacklist(obs_hash)
+                    salveaza_stire_in_memorie(f"{categorie} {road_hashtag}: {t_titlu_ro}")
+                    print(f"   ✅ [TRAFIC LIVE GT] Alerta trimisa pe {road_raw}")
+                    time.sleep(2)
+                
                 time.sleep(1)
         
             # 2. SCANARE STIRI RSS (Astea nu au fallback, daca pica AI-ul, pur si simplu asteapta ciclul urmator)
