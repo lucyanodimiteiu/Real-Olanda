@@ -223,8 +223,7 @@ def trimite_telegram_cu_audio(text_html: str, text_audio: str) -> bool:
 # ==========================================
 def preia_trafic_live() -> List[Dict]:
     alerte = []
-    url = "https://opendata.ndw.nu/NLRWS_VerkeersberichtSituaties.xml.gz"
-
+    url = "https://opendata.ndw.nu/actuele_statusberichten.xml.gz"
     try:
         resp = requests.get(url, timeout=20)
         resp.raise_for_status()
