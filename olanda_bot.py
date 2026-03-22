@@ -23,9 +23,8 @@ CANAL_DESTINATIE = os.getenv("TELEGRAM_CHANNEL_ID")
 PORT = int(os.getenv("PORT", 10000))
 
 RSS_FEEDS = [
-    "https://nos.nl/export/rss/economie.xml",
     "https://www.ttm.nl/feed/",
-    "https://www.nu.nl/rss/Economie"
+    "https://www.fnv.nl/rss"
 ]
 
 BLACKLIST_FILE = "processed_links_olanda.txt"
