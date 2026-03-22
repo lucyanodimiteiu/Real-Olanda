@@ -149,8 +149,43 @@ Răspunde STRICT JSON:
         return None
 
 # ==========================================
+# ==========================================
 # TELEGRAM
 # ==========================================
+def trimite_telegram_cu_audio(text_html: str, text_audio: str) -> bool:
+    if not TELEGRAM_TOKEN or not CANAL_DESTINATIE: return False
+    
+    # Trimitem intai mesajul text
+    url_text = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    try:
+        r = requests.post(url_text, json={"chat_id": CANAL_DESTINATIE, "text": text_html[:3997], "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=15)
+        if r.status_code != 200:
+            print(f"❌ Eroare Text Telegram ({r.status_code}): {r.text}")
+            return False
+            
+        # Generare si trimitere Audio
+        from gtts import gTTS
+        import tempfile
+        
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_audio:
+            tts = gTTS(text=text_audio[:2000], lang='ro')
+            tts.save(tmp_audio.name)
+            
+            url_audio = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendAudio"
+            with open(tmp_audio.name, 'rb') as audio_file:
+                files = {'audio': audio_file}
+                data = {'chat_id': CANAL_DESTINATIE, 'caption': "🎧 Versiunea Audio"}
+                r_audio = requests.post(url_audio, data=data, files=files, timeout=20)
+                
+        # Curatenie fisier temporar
+        try: os.remove(tmp_audio.name)
+        except: pass
+        
+        return True
+    except Exception as e:
+        print(f"❌ Exceptie trimitere Telegram: {e}")
+        return False
+
 def trimite_telegram(text_final: str) -> bool:
     if not TELEGRAM_TOKEN or not CANAL_DESTINATIE: return False
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -328,12 +363,15 @@ def worker_loop():
                         else:
                             text_rezumat = res.get('text_ro', 'Fara text')
                             postare = f"{res.get('emoji', '📌')} <b>{res.get('categorie')}</b>\n\n{text_rezumat}\n\n🔗 <a href='{link}'>Sursa Originală</a>\n\n<i>{SEMNATURA}</i>"
+                            
+                            # Generam audio pentru Stiri RSS
+                            text_audio = f"Știre nouă despre {res.get('categorie').replace('#', '')}. {text_rezumat}"
                         
-                            if trimite_telegram(postare):
+                            if trimite_telegram_cu_audio(postare, text_audio):
                                 add_to_blacklist(h)
                                 salveaza_stire_in_memorie(text_rezumat) 
                                 stiri_vechi_db.insert(0, text_rezumat)  
-                                print(f"   ✅ [STIRE] Postat: {titlu[:30]}...")
+                                print(f"   ✅ [STIRE AUDIO] Postat: {titlu[:30]}...")
                                 time.sleep(2)
                     time.sleep(1)
         
@@ -357,11 +395,14 @@ def worker_loop():
                         text_rezumat = res.get('text_ro', 'Fara text')
                         postare = f"{res.get('emoji', '📌')} <b>{res.get('categorie')}</b>\n\n{text_rezumat}\n\n🔗 <a href='{link}'>Sursa FNV</a>\n\n<i>{SEMNATURA}</i>"
                     
-                        if trimite_telegram(postare):
+                        # Generam audio pentru Stiri FNV
+                        text_audio = f"Noutate sindicală FNV din categoria {res.get('categorie').replace('#', '')}. {text_rezumat}"
+                        
+                        if trimite_telegram_cu_audio(postare, text_audio):
                             add_to_blacklist(h)
                             salveaza_stire_in_memorie(text_rezumat) 
                             stiri_vechi_db.insert(0, text_rezumat)  
-                            print(f"   ✅ [STIRE FNV] Postat: {titlu[:30]}...")
+                            print(f"   ✅ [STIRE AUDIO FNV] Postat: {titlu[:30]}...")
                             time.sleep(2)
                 time.sleep(1)
         
