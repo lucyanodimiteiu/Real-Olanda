@@ -14,6 +14,8 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from deep_translator import GoogleTranslator
+from telegram import Update, ParseMode
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
 # ==========================================
 # CONFIGURAȚII (Asistent Șoferi NL - LIVE RADAR v4.1 Fallback)
@@ -414,7 +416,63 @@ def worker_loop():
             traceback.print_exc()
             time.sleep(10)
 
+# ==========================================
+# BOT INTERACTIV TELEGRAM (COMENZI ON-DEMAND)
+# ==========================================
+def comanda_drum(update: Update, context: CallbackContext):
+    if not context.args:
+        update.message.reply_text("⚠️ Folosire corectă: /drum A2\nIntrodu numărul drumului pentru a verifica traficul pe el.")
+        return
+
+    road_requested = str(context.args[0]).upper().replace(" ", "")
+    update.message.reply_text(f"🔍 Caut informații live pentru drumul {road_requested}...")
+
+    alerte_live = preia_trafic_live()
+    alerte_gasite = []
+
+    for obs in alerte_live:
+        road_raw = str(obs.get('roadNumber', '')).strip().upper().replace(" ", "")
+        if road_requested == road_raw:
+            t_titlu_nl = obs.get('title', 'Alerte')
+            delay = float(obs.get('delay') or 0.0)
+            length = (obs.get('length') or 0.0) / 1000.0
+            
+            try: t_titlu_ro = GoogleTranslator(source='nl', target='ro').translate(t_titlu_nl)
+            except: t_titlu_ro = t_titlu_nl
+            
+            detalii = f"🚨 <b>{t_titlu_ro}</b>"
+            if delay > 0: detalii += f" | ⏳ Întârziere: {int(delay)} min"
+            if length > 0: detalii += f" | 📏 Coadă: {length:.1f} km"
+            alerte_gasite.append(detalii)
+
+    if not alerte_gasite:
+        update.message.reply_text(f"✅ Drum liber! Nu există alerte, accidente sau radare raportate de Rijkswaterstaat pe drumul {road_requested} în acest moment.")
+    else:
+        rezultat = f"🚧 <b>Situația LIVE pe drumul {road_requested}:</b>\n\n" + "\n\n".join(alerte_gasite)
+        update.message.reply_text(rezultat, parse_mode=ParseMode.HTML)
+
+def run_telegram_bot():
+    if not TELEGRAM_TOKEN:
+        print("❌ Nu pot porni modulul interactiv: TELEGRAM_BOT_TOKEN lipsește!")
+        return
+    try:
+        updater = Updater(TELEGRAM_TOKEN, use_context=True)
+        dp = updater.dispatcher
+        dp.add_handler(CommandHandler("drum", comanda_drum))
+        print("🤖 Modulul Interactiv (Comenzi Telegram) a pornit!")
+        updater.start_polling()
+        # Nu apelam updater.idle() pentru ca ruleaza intr-un thread separat fata de serverul web.
+    except Exception as e:
+        print(f"⚠️ Eroare la pornirea modulului interactiv Telegram: {e}")
+
 if __name__ == "__main__":
+    # 1. Thread pentru Worker Loop (Scraping Automat)
     worker_thread = threading.Thread(target=worker_loop, daemon=True)
     worker_thread.start()
+    
+    # 2. Thread pentru Botul Interactiv (Raspunsuri On-Demand)
+    telegram_thread = threading.Thread(target=run_telegram_bot, daemon=True)
+    telegram_thread.start()
+    
+    # 3. Server Web (Main thread, pt Render)
     run_server()

@@ -4,3 +4,4 @@ python-dotenv
 beautifulsoup4
 deep-translator
 gTTS
+python-telegram-bot==13.15
