@@ -9,13 +9,17 @@ import requests
 import feedparser
 import re
 import threading
+import asyncio
 import xml.etree.ElementTree as ET
+import gzip
+import io
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from deep_translator import GoogleTranslator
-from telegram import Update, ParseMode
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ==========================================
 # CONFIGURAȚII
@@ -46,9 +50,9 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        self.wfile.write(b"Olanda Bot: Online si Monitorizeaza Traficul LIVE.")
+        self.wfile.write(b"Olanda Bot v5.1: Online si Monitorizeaza Traficul LIVE.")
     def log_message(self, format, *args):
-        pass  # Suprima logurile HTTP
+        pass
 
 def run_server():
     server = HTTPServer(('0.0.0.0', PORT), SimpleHandler)
@@ -167,23 +171,34 @@ Răspunde STRICT JSON:
         return None
 
 # ==========================================
-# TELEGRAM - TRIMITERE MESAJE
+# TELEGRAM - TRIMITERE MESAJE (requests direct)
 # ==========================================
-def trimite_telegram_cu_audio(text_html: str, text_audio: str) -> bool:
-    if not TELEGRAM_TOKEN or not CANAL_DESTINATIE:
+def trimite_telegram(text_final: str, chat_id: str = None) -> bool:
+    if not TELEGRAM_TOKEN:
         return False
-    url_text = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    destinatie = chat_id or CANAL_DESTINATIE
+    if not destinatie:
+        return False
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        r = requests.post(url_text, json={
-            "chat_id": CANAL_DESTINATIE,
-            "text": text_html[:3997],
+        r = requests.post(url, json={
+            "chat_id": destinatie,
+            "text": text_final[:4096],
             "parse_mode": "HTML",
             "disable_web_page_preview": True
         }, timeout=15)
         if r.status_code != 200:
-            print(f"❌ Eroare Text Telegram ({r.status_code}): {r.text}")
+            print(f"❌ Eroare API Telegram ({r.status_code}): {r.text[:200]}")
             return False
+        return True
+    except Exception as e:
+        print(f"❌ Exceptie trimitere Telegram: {e}")
+        return False
 
+def trimite_telegram_cu_audio(text_html: str, text_audio: str) -> bool:
+    if not trimite_telegram(text_html):
+        return False
+    try:
         from gtts import gTTS
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_audio:
@@ -199,51 +214,21 @@ def trimite_telegram_cu_audio(text_html: str, text_audio: str) -> bool:
             os.remove(tmp_audio.name)
         except:
             pass
-        return True
     except Exception as e:
-        print(f"❌ Exceptie trimitere Telegram: {e}")
-        return False
-
-def trimite_telegram(text_final: str, chat_id: str = None) -> bool:
-    if not TELEGRAM_TOKEN:
-        return False
-    destinatie = chat_id or CANAL_DESTINATIE
-    if not destinatie:
-        return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try:
-        r = requests.post(url, json={
-            "chat_id": destinatie,
-            "text": text_final[:3997],
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True
-        }, timeout=15)
-        if r.status_code != 200:
-            print(f"❌ Eroare API Telegram ({r.status_code}): {r.text}")
-            return False
-        return True
-    except Exception as e:
-        print(f"❌ Exceptie trimitere Telegram: {e}")
-        return False
+        print(f"⚠️ Eroare audio (mesajul text a fost trimis): {e}")
+    return True
 
 # ==========================================
-# API RIJKSWATERSTAAT - DATEX II (opendata.ndw.nu)
+# API RIJKSWATERSTAAT - DATEX II
 # ==========================================
 def preia_trafic_live() -> List[Dict]:
-    """
-    Preia date live de la API-ul oficial Rijkswaterstaat (DATEX II / opendata.ndw.nu).
-    Returneaza o lista de dictionare cu informatii despre fiecare incident.
-    """
     alerte = []
     url = "https://opendata.ndw.nu/NLRWS_VerkeersberichtSituaties.xml.gz"
 
     try:
-        import gzip
-        import io
         resp = requests.get(url, timeout=20)
         resp.raise_for_status()
 
-        # Decompress gzip
         with gzip.GzipFile(fileobj=io.BytesIO(resp.content)) as gz:
             xml_data = gz.read()
 
@@ -255,60 +240,37 @@ def preia_trafic_live() -> List[Dict]:
             for record in situation.findall(".//d2:situationRecord", NS):
                 rec_type = record.get("{http://www.w3.org/2001/XMLSchema-instance}type", "")
                 rec_id = record.get("id", "")
-
-                # Timestamp creare
                 creation_time = record.findtext("d2:situationRecordCreationTime", default="", namespaces=NS)
-
-                # Cauza
                 cauza_nl = record.findtext(".//d2:causeDescription/d2:values/d2:value", default="", namespaces=NS)
                 cauza_type = record.findtext(".//d2:causeType", default="other", namespaces=NS)
 
-                # Impact / delay
-                delay_seconds = 0.0
                 delay_val = record.findtext(".//d2:delayTimeValue", default="0", namespaces=NS)
                 try:
-                    delay_seconds = float(delay_val)
+                    delay_minutes = float(delay_val) / 60.0
                 except:
-                    delay_seconds = 0.0
-                delay_minutes = delay_seconds / 60.0
+                    delay_minutes = 0.0
 
                 delay_band = record.findtext(".//d2:delayBand", default="", namespaces=NS)
 
-                # Coada
-                queue_length_m = 0
                 ql = record.findtext("d2:queueLength", default="0", namespaces=NS)
                 try:
-                    queue_length_m = int(ql)
+                    queue_length_km = int(ql) / 1000.0
                 except:
-                    queue_length_m = 0
-                queue_length_km = queue_length_m / 1000.0
+                    queue_length_km = 0.0
 
-                # Tip trafic anormal
                 abnormal_type = record.findtext("d2:abnormalTrafficType", default="", namespaces=NS)
-
-                # Tip management drum
                 management_type = record.findtext("d2:roadOrCarriagewayOrLaneManagementType", default="", namespaces=NS)
-
-                # Comentariu public
-                comment_nl = record.findtext(".//d2:generalPublicComment/d2:comment/d2:values/d2:value",
-                                             default="", namespaces=NS)
-
-                # Coordonate locatie
+                comment_nl = record.findtext(".//d2:generalPublicComment/d2:comment/d2:values/d2:value", default="", namespaces=NS)
                 lat = record.findtext(".//d2:locationForDisplay/d2:latitude", default="", namespaces=NS)
                 lon = record.findtext(".//d2:locationForDisplay/d2:longitude", default="", namespaces=NS)
 
-                # Directie
                 direction_coded = record.findtext(".//d2:alertCDirectionCoded", default="", namespaces=NS)
                 direction_text = "pozitiv" if direction_coded == "positive" else "negativ" if direction_coded == "negative" else "-"
 
-                # Carosabil afectat
                 carriageway = record.findtext(".//d2:carriageway", default="", namespaces=NS)
                 lane = record.findtext(".//d2:lane", default="", namespaces=NS)
-
-                # Validitate
                 time_start = record.findtext(".//d2:overallStartTime", default="", namespaces=NS)
                 time_end = record.findtext(".//d2:overallEndTime", default="", namespaces=NS)
-                is_current = (time_end == "")  # Daca nu are end time, e activ
 
                 alerte.append({
                     "situationId": sit_id,
@@ -329,27 +291,24 @@ def preia_trafic_live() -> List[Dict]:
                     "lane": lane,
                     "time_start": time_start,
                     "time_end": time_end,
-                    "is_current": is_current,
                     "creation_time": creation_time,
                 })
 
         print(f"   📡 DATEX II: {len(alerte)} înregistrări preluate")
 
     except Exception as e:
-        print(f"⚠️ Eroare API DATEX II Rijkswaterstaat: {e}")
+        print(f"⚠️ Eroare API DATEX II: {e}")
 
     return alerte
 
 
 def determina_emoji_si_categorie(alerta: Dict) -> tuple:
-    """Determina emoji si categorie pe baza datelor din alerta."""
     rec_type = alerta.get("recordType", "").lower()
     cauza_nl = alerta.get("cauza_nl", "").lower()
     cauza_type = alerta.get("cauza_type", "").lower()
     abnormal = alerta.get("abnormal_type", "").lower()
     mgmt = alerta.get("management_type", "").lower()
     comment = alerta.get("comment_nl", "").lower()
-
     combined = f"{rec_type} {cauza_nl} {cauza_type} {abnormal} {mgmt} {comment}"
 
     if cauza_type == "accident" or any(kw in combined for kw in ["ongeval", "ongeluk", "botsing", "accident"]):
@@ -362,7 +321,7 @@ def determina_emoji_si_categorie(alerta: Dict) -> tuple:
         return "🚧", "#Lucrari_Drumuri"
     elif any(kw in combined for kw in ["wegdek", "slechte toestand"]):
         return "⚠️", "#Drum_Deteriorat"
-    elif any(kw in combined for kw in ["cariagewayClosures", "carriagewayClosures", "laneClosures", "afgesloten"]):
+    elif any(kw in combined for kw in ["carriagewayClosures", "laneClosures", "afgesloten"]):
         return "⛔", "#Banda_Inchisa"
     elif any(kw in combined for kw in ["stilstaand", "stationarytraffic"]):
         return "🛑", "#Trafic_Stationar"
@@ -377,21 +336,20 @@ def determina_emoji_si_categorie(alerta: Dict) -> tuple:
 
 
 def construieste_mesaj_alerta(alerta: Dict, road_tag: str = "") -> str:
-    """Construieste mesajul HTML pentru Telegram dintr-o alerta DATEX II."""
     emoji, categorie = determina_emoji_si_categorie(alerta)
 
-    # Traducere cauza
     cauza_nl = alerta.get("cauza_nl", "")
     comment_nl = alerta.get("comment_nl", "")
     try:
         cauza_ro = GoogleTranslator(source='nl', target='ro').translate(cauza_nl) if cauza_nl else ""
-        comment_ro = GoogleTranslator(source='nl', target='ro').translate(comment_nl) if comment_nl else ""
     except:
         cauza_ro = cauza_nl
+    try:
+        comment_ro = GoogleTranslator(source='nl', target='ro').translate(comment_nl) if comment_nl else ""
+    except:
         comment_ro = comment_nl
 
     hashtag = f" {road_tag}" if road_tag else ""
-
     postare = f"⛔ <b>{categorie}{hashtag}</b>\n\n"
     postare += f"{emoji} <b>{cauza_ro.upper() if cauza_ro else categorie.replace('#', '')}</b>\n"
 
@@ -432,97 +390,6 @@ def construieste_mesaj_alerta(alerta: Dict, road_tag: str = "") -> str:
     postare += f"\n📍 <i>Rijkswaterstaat Verkeersinfo LIVE</i>\n<i>{SEMNATURA}</i>"
     return postare
 
-
-# ==========================================
-# COMANDA /drum - FUNCTIONEAZA SI PE CANAL
-# ==========================================
-def cmd_drum(update: Update, context: CallbackContext):
-    """
-    Comanda /drum <cod_drum> - functioneaza atat in chat privat cat si pe canal/grup.
-    Cauta in datele live DATEX II toate incidentele pentru drumul specificat.
-    """
-    # Determina chat_id de raspuns (canal sau chat privat)
-    chat_id = str(update.effective_chat.id)
-
-    args = context.args
-    if not args:
-        trimite_telegram(
-            "❓ <b>Utilizare:</b> <code>/drum A2</code> sau <code>/drum N11</code>\n"
-            "Specificați codul drumului pentru care doriți informații live.",
-            chat_id=chat_id
-        )
-        return
-
-    road_query = args[0].upper().strip()
-    trimite_telegram(f"🔍 Caut informații live pentru <b>{road_query}</b>...", chat_id=chat_id)
-
-    try:
-        alerte = preia_trafic_live()
-    except Exception as e:
-        trimite_telegram(f"❌ Eroare la preluarea datelor: {e}", chat_id=chat_id)
-        return
-
-    # Filtreaza alertele pentru drumul cautat
-    # DATEX II nu are roadNumber explicit - cautam in situationId si recordId
-    # care contin adesea codul drumului (ex: NLRWS_...) sau in alte campuri
-    alerte_drum = []
-    road_lower = road_query.lower()
-    road_no_prefix = road_lower.lstrip('abn')  # ex: "a2" -> "2", "n11" -> "11"
-
-    for a in alerte:
-        sit_id = a.get("situationId", "").lower()
-        rec_id = a.get("recordId", "").lower()
-        comment = a.get("comment_nl", "").lower()
-        cauza = a.get("cauza_nl", "").lower()
-
-        # Verificam daca ID-ul sau comentariul contine referinta la drum
-        combined_check = f"{sit_id} {rec_id} {comment} {cauza}"
-        if road_lower in combined_check or (road_no_prefix and road_no_prefix in combined_check):
-            alerte_drum.append(a)
-
-    if not alerte_drum:
-        trimite_telegram(
-            f"✅ <b>{road_query}</b>: Nu sunt incidente raportate în acest moment.\n"
-            f"📍 <i>Rijkswaterstaat LIVE • {datetime.now().strftime('%H:%M')}</i>\n"
-            f"<i>{SEMNATURA}</i>",
-            chat_id=chat_id
-        )
-        return
-
-    # Trimite fiecare incident gasit
-    trimite_telegram(
-        f"🚦 <b>Situație trafic {road_query}</b> — {len(alerte_drum)} incident(e) găsite:\n"
-        f"<i>Sursa: Rijkswaterstaat DATEX II • {datetime.now().strftime('%H:%M')}</i>",
-        chat_id=chat_id
-    )
-    time.sleep(1)
-
-    for a in alerte_drum[:10]:  # maxim 10 mesaje
-        road_hashtag = f"#{road_query}"
-        mesaj = construieste_mesaj_alerta(a, road_tag=road_hashtag)
-        trimite_telegram(mesaj, chat_id=chat_id)
-        time.sleep(1)
-
-
-# ==========================================
-# COMANDA /status - info bot
-# ==========================================
-def cmd_status(update: Update, context: CallbackContext):
-    chat_id = str(update.effective_chat.id)
-    trimite_telegram(
-        f"🤖 <b>Olanda Bot Status</b>\n\n"
-        f"✅ Bot activ\n"
-        f"📡 Sursa date: Rijkswaterstaat DATEX II\n"
-        f"🕐 Verificare la fiecare: {VERIFY_INTERVAL} secunde\n"
-        f"📅 Ora server: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n\n"
-        f"<i>Comenzi disponibile:</i>\n"
-        f"• <code>/drum A2</code> — situație drum specific\n"
-        f"• <code>/status</code> — starea botului\n\n"
-        f"<i>{SEMNATURA}</i>",
-        chat_id=chat_id
-    )
-
-
 # ==========================================
 # SCRAPER FNV NIEUWS
 # ==========================================
@@ -548,12 +415,11 @@ def preia_stiri_fnv():
         print(f"⚠️ Eroare scraper FNV: {e}")
     return stiri
 
-
 # ==========================================
-# WORKER LOOP PRINCIPAL
+# WORKER LOOP (thread separat, sincron)
 # ==========================================
 def worker_loop():
-    print(f"🚀 Pornire Olanda Bot v5.0 (DATEX II): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🚀 Pornire Olanda Bot v5.1 (DATEX II + PTB20): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     if not all([TELEGRAM_TOKEN, CANAL_DESTINATIE]):
         print("❌ EROARE CRITICĂ: Configurație incompletă!")
         print(f"   - TELEGRAM_BOT_TOKEN: {'✅' if TELEGRAM_TOKEN else '❌'}")
@@ -568,61 +434,42 @@ def worker_loop():
             print(f"🔄 Verificare DATEX II la {datetime.now().strftime('%H:%M:%S')}...")
             stiri_vechi_db = preia_stiri_vechi(15)
 
-            # ======================================
-            # 1. SCANARE TRAFIC LIVE (DATEX II)
-            # ======================================
+            # 1. TRAFIC LIVE (DATEX II)
             alerte_live = preia_trafic_live()
-
             for obs in alerte_live:
-                sit_id = obs.get("situationId", "")
                 rec_id = obs.get("recordId", "")
                 delay = obs.get("delay_minutes", 0)
                 queue = obs.get("queue_length_km", 0)
-                cauza_type = obs.get("cauza_type", "")
-                is_accident = (cauza_type == "accident" or "accident" in obs.get("cauza_nl", "").lower())
-
-                # Hash unic: ID situatie + delay rotunjit la 10 min + coada rotunjita la 1 km
                 obs_hash = f"DATEX2_{rec_id}_{int(delay // 10)}_{int(queue // 1)}"
                 if is_blacklisted(obs_hash):
                     continue
-
-                # Construim si trimitem mesajul
                 mesaj = construieste_mesaj_alerta(obs)
-
                 if trimite_telegram(mesaj):
                     add_to_blacklist(obs_hash)
                     emoji, categorie = determina_emoji_si_categorie(obs)
                     salveaza_stire_in_memorie(f"{categorie}: {obs.get('cauza_nl', '')} | delay={delay:.0f}min queue={queue:.1f}km")
-                    print(f"   ✅ [DATEX II] Alerta trimisa: {rec_id} | {categorie} | delay={delay:.0f}min | queue={queue:.1f}km")
+                    print(f"   ✅ [DATEX II] {rec_id} | {categorie} | delay={delay:.0f}min | queue={queue:.1f}km")
                     time.sleep(2)
-
                 time.sleep(0.5)
 
-            # ======================================
-            # 2. SCANARE STIRI RSS (TTM)
-            # ======================================
-            for url in RSS_FEEDS:
+            # 2. STIRI RSS (TTM)
+            for rss_url in RSS_FEEDS:
                 try:
-                    feed = feedparser.parse(url)
+                    feed = feedparser.parse(rss_url)
                 except:
                     continue
-
                 if not hasattr(feed, "entries"):
                     continue
-
                 for entry in feed.entries[:3]:
                     titlu = getattr(entry, "title", None)
                     link = getattr(entry, "link", None)
                     if not link or not titlu:
                         continue
-
                     h = hash_text(link)
                     if is_blacklisted(h):
                         continue
-
                     descriere = getattr(entry, "description", "") or getattr(entry, "summary", "")
                     res = proceseaza_stire_ai(titlu, descriere, stiri_vechi_db, sursa_tip="RSS")
-
                     if res:
                         if res.get("categorie") == "IGNORE" or res.get("duplicat", False):
                             add_to_blacklist(h)
@@ -632,32 +479,26 @@ def worker_loop():
                                        f"{text_rezumat}\n\n"
                                        f"🔗 <a href='{link}'>Sursa Originală</a>\n\n"
                                        f"<i>{SEMNATURA}</i>")
-                            text_audio = f"Știre nouă despre {res.get('categorie').replace('#', '')}. {text_rezumat}"
-
+                            text_audio = f"Știre nouă despre {res.get('categorie','').replace('#', '')}. {text_rezumat}"
                             if trimite_telegram_cu_audio(postare, text_audio):
                                 add_to_blacklist(h)
                                 salveaza_stire_in_memorie(text_rezumat)
-                                print(f"   ✅ [STIRE AUDIO TTM] Postat: {titlu[:40]}...")
+                                print(f"   ✅ [TTM] {titlu[:40]}...")
                                 time.sleep(2)
                     time.sleep(1)
 
-            # ======================================
-            # 3. SCANARE FNV
-            # ======================================
+            # 3. FNV
             stiri_fnv = preia_stiri_fnv()
             for stire in stiri_fnv:
                 titlu = stire.get("title")
                 link = stire.get("link")
                 if not link or not titlu:
                     continue
-
                 h = hash_text(link)
                 if is_blacklisted(h):
                     continue
-
                 descriere = stire.get("description", "Noutate FNV.")
                 res = proceseaza_stire_ai(titlu, descriere, stiri_vechi_db, sursa_tip="RSS")
-
                 if res:
                     if res.get("categorie") == "IGNORE" or res.get("duplicat", False):
                         add_to_blacklist(h)
@@ -667,12 +508,11 @@ def worker_loop():
                                    f"{text_rezumat}\n\n"
                                    f"🔗 <a href='{link}'>Sursa FNV</a>\n\n"
                                    f"<i>{SEMNATURA}</i>")
-                        text_audio = f"Noutate sindicală FNV din categoria {res.get('categorie').replace('#', '')}. {text_rezumat}"
-
+                        text_audio = f"Noutate sindicală FNV. {text_rezumat}"
                         if trimite_telegram_cu_audio(postare, text_audio):
                             add_to_blacklist(h)
                             salveaza_stire_in_memorie(text_rezumat)
-                            print(f"   ✅ [STIRE AUDIO FNV] Postat: {titlu[:40]}...")
+                            print(f"   ✅ [FNV] {titlu[:40]}...")
                             time.sleep(2)
                 time.sleep(1)
 
@@ -684,36 +524,110 @@ def worker_loop():
             traceback.print_exc()
             time.sleep(10)
 
+# ==========================================
+# COMENZI TELEGRAM (async - PTB v20)
+# ==========================================
+async def cmd_drum(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    args = context.args
+
+    if not args:
+        trimite_telegram(
+            "❓ <b>Utilizare:</b> <code>/drum A2</code> sau <code>/drum N11</code>\n"
+            "Specificați codul drumului pentru informații live.",
+            chat_id=chat_id
+        )
+        return
+
+    road_query = args[0].upper().strip()
+    trimite_telegram(f"🔍 Caut informații live pentru <b>{road_query}</b>...", chat_id=chat_id)
+
+    try:
+        alerte = preia_trafic_live()
+    except Exception as e:
+        trimite_telegram(f"❌ Eroare la preluarea datelor: {e}", chat_id=chat_id)
+        return
+
+    alerte_drum = []
+    road_lower = road_query.lower()
+    road_no_prefix = re.sub(r'^[a-z]+', '', road_lower)
+
+    for a in alerte:
+        sit_id = a.get("situationId", "").lower()
+        rec_id = a.get("recordId", "").lower()
+        comment = a.get("comment_nl", "").lower()
+        cauza = a.get("cauza_nl", "").lower()
+        combined_check = f"{sit_id} {rec_id} {comment} {cauza}"
+        if road_lower in combined_check or (road_no_prefix and f"_{road_no_prefix}" in combined_check):
+            alerte_drum.append(a)
+
+    if not alerte_drum:
+        trimite_telegram(
+            f"✅ <b>{road_query}</b>: Nu sunt incidente raportate în acest moment.\n"
+            f"📍 <i>Rijkswaterstaat LIVE • {datetime.now().strftime('%H:%M')}</i>\n"
+            f"<i>{SEMNATURA}</i>",
+            chat_id=chat_id
+        )
+        return
+
+    trimite_telegram(
+        f"🚦 <b>Situație trafic {road_query}</b> — {len(alerte_drum)} incident(e):\n"
+        f"<i>Rijkswaterstaat DATEX II • {datetime.now().strftime('%H:%M')}</i>",
+        chat_id=chat_id
+    )
+    time.sleep(1)
+
+    for a in alerte_drum[:10]:
+        mesaj = construieste_mesaj_alerta(a, road_tag=f"#{road_query}")
+        trimite_telegram(mesaj, chat_id=chat_id)
+        time.sleep(1)
+
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    trimite_telegram(
+        f"🤖 <b>Olanda Bot v5.1 Status</b>\n\n"
+        f"✅ Bot activ\n"
+        f"📡 Sursa: Rijkswaterstaat DATEX II\n"
+        f"🕐 Interval verificare: {VERIFY_INTERVAL}s\n"
+        f"📅 {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n\n"
+        f"<i>Comenzi:</i>\n"
+        f"• <code>/drum A2</code> — situație drum\n"
+        f"• <code>/status</code> — starea botului\n\n"
+        f"<i>{SEMNATURA}</i>",
+        chat_id=chat_id
+    )
 
 # ==========================================
-# BOT TELEGRAM INTERACTIV
+# BOT TELEGRAM ASYNC (PTB v20)
 # ==========================================
 def run_telegram_bot():
     if not TELEGRAM_TOKEN:
         print("❌ TELEGRAM_TOKEN lipseste, botul interactiv nu porneste.")
         return
 
-    updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
-    dp = updater.dispatcher
+    async def main():
+        app = Application.builder().token(TELEGRAM_TOKEN).build()
+        app.add_handler(CommandHandler("drum", cmd_drum))
+        app.add_handler(CommandHandler("status", cmd_status))
+        print("🤖 Bot Telegram v20 pornit (comenzi: /drum, /status)")
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling(drop_pending_updates=True)
+        while True:
+            await asyncio.sleep(3600)
 
-    # Inregistreaza comenzile - functioneaza in chat privat SI pe canal/grup
-    dp.add_handler(CommandHandler("drum", cmd_drum, pass_args=True))
-    dp.add_handler(CommandHandler("status", cmd_status))
-
-    print("🤖 Bot Telegram interactiv pornit (comenzi: /drum, /status)")
-    updater.start_polling(drop_pending_updates=True)
-    updater.idle()
-
+    asyncio.run(main())
 
 # ==========================================
 # MAIN
 # ==========================================
 if __name__ == "__main__":
-    # Thread 1: Worker Loop (scraping automat)
+    # Thread 1: Worker Loop
     worker_thread = threading.Thread(target=worker_loop, daemon=True)
     worker_thread.start()
 
-    # Thread 2: Bot Telegram interactiv (/drum, /status)
+    # Thread 2: Bot Telegram interactiv
     telegram_thread = threading.Thread(target=run_telegram_bot, daemon=True)
     telegram_thread.start()
 
