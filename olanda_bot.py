@@ -23,8 +23,7 @@ CANAL_DESTINATIE = os.getenv("TELEGRAM_CHANNEL_ID")
 PORT = int(os.getenv("PORT", 10000))
 
 RSS_FEEDS = [
-    "https://www.ttm.nl/feed/",
-    "https://www.fnv.nl/rss"
+    "https://www.ttm.nl/feed/"
 ]
 
 BLACKLIST_FILE = "processed_links_olanda.txt"
@@ -192,6 +191,35 @@ def preia_trafic_live():
     return alerte
 
 # ==========================================
+# SCRAPER FNV NIEUWS
+# ==========================================
+def preia_stiri_fnv():
+    stiri = []
+    url = "https://www.fnv.nl/over-de-fnv/nieuws"
+    try:
+        from bs4 import BeautifulSoup
+        resp = requests.get(url, timeout=15)
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        # Găsește containerele cu știri
+        items = soup.find_all('a', class_=re.compile(r'nieuwsoverzicht__item'))
+        for item in items[:5]: # luăm ultimele 5 știri ca să nu spamăm la început
+            link = item.get('href', '')
+            if not link.startswith('http'):
+                link = "https://www.fnv.nl" + link
+            
+            titlu_tag = item.find('h3', class_='nieuwsoverzicht__item-title')
+            titlu = titlu_tag.text.strip() if titlu_tag else ""
+            
+            desc_tag = item.find('div', class_='nieuwsoverzicht__item-content')
+            descriere = desc_tag.text.strip() if desc_tag else "Noutate sindicală FNV."
+            
+            if titlu and link:
+                stiri.append({"title": titlu, "link": link, "description": descriere})
+    except Exception as e:
+        print(f"⚠️ Eroare scraper FNV: {e}")
+    return stiri
+
+# ==========================================
 # WORKER LOOP
 # ==========================================
 def worker_loop():
@@ -280,6 +308,34 @@ def worker_loop():
                                 print(f"   ✅ [STIRE] Postat: {titlu[:30]}...")
                                 time.sleep(2)
                     time.sleep(1)
+        
+            # 3. SCANARE FNV SCRAPER
+            stiri_fnv = preia_stiri_fnv()
+            for stire in stiri_fnv:
+                titlu = stire.get("title")
+                link = stire.get("link")
+                if not link or not titlu: continue
+
+                h = hash_text(link)
+                if is_blacklisted(h): continue 
+
+                descriere = stire.get("description", "Noutate FNV.")
+                res = proceseaza_stire_ai(titlu, descriere, stiri_vechi_db, sursa_tip="RSS")
+
+                if res:
+                    if res.get("categorie") == "IGNORE" or res.get("duplicat", False):
+                        add_to_blacklist(h)
+                    else:
+                        text_rezumat = res.get('text_ro', 'Fara text')
+                        postare = f"{res.get('emoji', '📌')} <b>{res.get('categorie')}</b>\n\n{text_rezumat}\n\n🔗 <a href='{link}'>Sursa FNV</a>\n\n<i>{SEMNATURA}</i>"
+                    
+                        if trimite_telegram(postare):
+                            add_to_blacklist(h)
+                            salveaza_stire_in_memorie(text_rezumat) 
+                            stiri_vechi_db.insert(0, text_rezumat)  
+                            print(f"   ✅ [STIRE FNV] Postat: {titlu[:30]}...")
+                            time.sleep(2)
+                time.sleep(1)
         
             time.sleep(VERIFY_INTERVAL)
 
