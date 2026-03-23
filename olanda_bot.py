@@ -37,7 +37,6 @@ BLACKLIST_SET = set()
 SEMNATURA = "@real_live_by_luci"
 VERIFY_INTERVAL = 60
 NS = {"d2": "http://datex2.eu/schema/2/2_0"}
-LOCATIE_CACHE = {}
 
 # ==========================================
 # DUMMY WEB SERVER
@@ -47,17 +46,17 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        self.wfile.write(b"Olanda Bot v8.0: Online si Monitorizeaza Traficul LIVE.")
+        self.wfile.write(b"Olanda Bot v9.0: Online.")
     def log_message(self, format, *args):
         pass
 
 def run_server():
     server = HTTPServer(('0.0.0.0', PORT), SimpleHandler)
-    print(f"🌐 Dummy Server pornit pe portul {PORT}")
+    print(f"🌐 Server pornit pe portul {PORT}")
     server.serve_forever()
 
 # ==========================================
-# GESTIONARE MEMORIE / BLACKLIST
+# MEMORIE / BLACKLIST
 # ==========================================
 def load_blacklist():
     global BLACKLIST_SET
@@ -68,10 +67,10 @@ def load_blacklist():
         except:
             pass
 
-def is_blacklisted(h: str) -> bool:
+def is_blacklisted(h):
     return h in BLACKLIST_SET
 
-def add_to_blacklist(h: str):
+def add_to_blacklist(h):
     if h not in BLACKLIST_SET:
         BLACKLIST_SET.add(h)
         try:
@@ -80,7 +79,7 @@ def add_to_blacklist(h: str):
         except:
             pass
 
-def hash_text(text: str) -> str:
+def hash_text(text):
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 def init_db():
@@ -88,8 +87,7 @@ def init_db():
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS stiri_recente
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  text_rezumat TEXT,
-                  data_postare TEXT)''')
+                  text_rezumat TEXT, data_postare TEXT)''')
     conn.commit()
     conn.close()
 
@@ -99,8 +97,7 @@ def preia_stiri_vechi(limita=15):
     try:
         return [row[0] for row in c.execute(
             'SELECT text_rezumat FROM stiri_recente ORDER BY id DESC LIMIT ?',
-            (limita,)
-        ).fetchall()]
+            (limita,)).fetchall()]
     except:
         return []
     finally:
@@ -121,58 +118,73 @@ def salveaza_stire_in_memorie(text_rezumat):
         conn.close()
 
 # ==========================================
-# REVERSE GEOCODING
+# EXTRAGE NUMAR DRUM DIN ID SITUATIE
 # ==========================================
-def get_locatie_din_coordonate(lat: str, lon: str) -> Tuple[str, str]:
-    """Returneaza (road_number, locatie_text) - fara Nominatim."""
-    return "", ""
+def extrage_drum_din_id(sit_id, rec_id, comment_nl=""):
+    """Extrage numarul drumului (A2, N11 etc.) din ID-urile DATEX II."""
+    road_number = ""
+    # Incearca toate sursele
+    for sursa in [sit_id, rec_id, comment_nl]:
+        if not sursa:
+            continue
+        # Format: _A2_ sau _N11_ sau _A12_ in ID
+        m = re.search(r'(?:^|_)([AENB]\d{1,3})(?:_|$)', str(sursa), re.IGNORECASE)
+        if m:
+            road_number = m.group(1).upper()
+            break
+        # Format mai general: A2, N11, A12 oriunde in text
+        m = re.search(r'\b([AENB]\d{1,3})\b', str(sursa), re.IGNORECASE)
+        if m:
+            road_number = m.group(1).upper()
+            break
+    return road_number
+
+# ==========================================
+# REVERSE GEOCODING (doar pentru locatie text, NU pentru drum)
+# Apelat DOAR la trimitere, nu la incarcare
+# ==========================================
+LOCATIE_CACHE = {}
+
+def get_locatie_text(lat, lon):
+    """Returneaza numele locatiei din GPS, cu cache."""
+    if not lat or not lon:
+        return ""
     cache_key = f"{lat},{lon}"
     if cache_key in LOCATIE_CACHE:
         return LOCATIE_CACHE[cache_key]
     try:
-        url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json&zoom=14&accept-language=nl"
-        resp = requests.get(url, headers={"User-Agent": "OlandaBot/8.0"}, timeout=5)
+        url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json&zoom=12&accept-language=nl"
+        resp = requests.get(url, headers={"User-Agent": "OlandaBot/9.0"}, timeout=4)
         data = resp.json()
         addr = data.get("address", {})
-        road_raw = addr.get("road", "") or ""
-        
-        # Cauta numarul drumului in toate campurile posibile
-        road_number = ""
-        for field in [road_raw, addr.get("motorway", ""), addr.get("trunk", ""),
-                      data.get("display_name", "")]:
-            match = re.search(r'\b([AENB]\d{1,3})\b', str(field), re.IGNORECASE)
-            if match:
-                road_number = match.group(1).upper()
-                break
-        
-        # Daca nu gasit, incearca format "A 2" sau "N 11"
-        if not road_number:
-            match = re.search(r'\b([AENB])\s(\d{1,3})\b', road_raw, re.IGNORECASE)
-            if match:
-                road_number = f"{match.group(1).upper()}{match.group(2)}"
-
         city = (addr.get("city", "") or addr.get("town", "") or
                 addr.get("village", "") or addr.get("municipality", "") or "")
+        road = addr.get("road", "") or ""
+        # Incearca sa gaseasca si numarul drumului din GPS
+        road_from_gps = ""
+        m = re.search(r'\b([AENB]\d{1,3})\b', road, re.IGNORECASE)
+        if m:
+            road_from_gps = m.group(1).upper()
         parts = []
-        if road_raw:
-            parts.append(road_raw)
+        if road and not road_from_gps:
+            parts.append(road)
         if city:
             parts.append(city)
-        locatie = ", ".join(parts) if parts else ""
-        result = (road_number, locatie)
+        locatie = ", ".join(parts) if parts else city
+        result = (road_from_gps, locatie)
         LOCATIE_CACHE[cache_key] = result
         return result
     except:
         LOCATIE_CACHE[cache_key] = ("", "")
-        return "", ""
+        return ("", "")
+
 # ==========================================
-# UTILITARE AI
+# AI (DeepSeek pentru stiri)
 # ==========================================
-def clean_json_response(text: str) -> str:
+def clean_json_response(text):
     return re.sub(r"```$", "", re.sub(r"^```json\s*", "", text).strip()).strip()
 
-def proceseaza_stire_ai(titlu: str, descriere: str, texte_vechi: list,
-                        sursa_tip: str = "RSS") -> Optional[Dict[str, Any]]:
+def proceseaza_stire_ai(titlu, descriere, texte_vechi, sursa_tip="RSS"):
     if not DEEPSEEK_KEY:
         return None
     context_vechi = "\n".join([f"- {t}" for t in texte_vechi]) if texte_vechi else "Nicio stire recenta."
@@ -203,13 +215,13 @@ Răspunde STRICT JSON:
         resp.raise_for_status()
         return json.loads(clean_json_response(resp.json()["choices"][0]["message"]["content"]))
     except Exception as e:
-        print(f"⚠️ Eroare AI ({sursa_tip}): {e}")
+        print(f"⚠️ Eroare AI: {e}")
         return None
 
 # ==========================================
 # TELEGRAM
 # ==========================================
-def trimite_telegram(text_final: str, chat_id: str = None) -> bool:
+def trimite_telegram(text_final, chat_id=None):
     if not TELEGRAM_TOKEN:
         return False
     destinatie = chat_id or CANAL_DESTINATIE
@@ -224,39 +236,38 @@ def trimite_telegram(text_final: str, chat_id: str = None) -> bool:
             "disable_web_page_preview": True
         }, timeout=15)
         if r.status_code != 200:
-            print(f"❌ Eroare Telegram ({r.status_code}): {r.text[:200]}")
+            print(f"❌ Telegram ({r.status_code}): {r.text[:100]}")
             return False
         return True
     except Exception as e:
-        print(f"❌ Exceptie Telegram: {e}")
+        print(f"❌ Telegram exceptie: {e}")
         return False
 
-def trimite_telegram_cu_audio(text_html: str, text_audio: str) -> bool:
+def trimite_telegram_cu_audio(text_html, text_audio):
     if not trimite_telegram(text_html):
         return False
     try:
         from gtts import gTTS
         import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_audio:
-            tts = gTTS(text=text_audio[:2000], lang='ro')
-            tts.save(tmp_audio.name)
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            gTTS(text=text_audio[:2000], lang='ro').save(tmp.name)
             url_audio = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendAudio"
-            with open(tmp_audio.name, 'rb') as audio_file:
+            with open(tmp.name, 'rb') as af:
                 requests.post(url_audio,
-                              data={'chat_id': CANAL_DESTINATIE, 'caption': "🎧 Versiunea Audio"},
-                              files={'audio': audio_file}, timeout=20)
+                              data={'chat_id': CANAL_DESTINATIE, 'caption': "🎧 Audio"},
+                              files={'audio': af}, timeout=20)
         try:
-            os.remove(tmp_audio.name)
+            os.remove(tmp.name)
         except:
             pass
     except Exception as e:
-        print(f"⚠️ Eroare audio: {e}")
+        print(f"⚠️ Audio: {e}")
     return True
 
 # ==========================================
-# DATEX II - RIJKSWATERSTAAT
+# DATEX II
 # ==========================================
-def preia_trafic_live() -> List[Dict]:
+def preia_trafic_live():
     alerte = []
     url = "https://opendata.ndw.nu/actuele_statusberichten.xml.gz"
     try:
@@ -269,11 +280,12 @@ def preia_trafic_live() -> List[Dict]:
         for situation in root.findall(".//d2:situation", NS):
             sit_id = situation.get("id", "")
             for record in situation.findall(".//d2:situationRecord", NS):
-                rec_type = record.get("{http://www.w3.org/2001/XMLSchema-instance}type", "")
                 rec_id = record.get("id", "")
+                rec_type = record.get("{http://www.w3.org/2001/XMLSchema-instance}type", "")
                 creation_time = record.findtext("d2:situationRecordCreationTime", default="", namespaces=NS)
                 cauza_nl = record.findtext(".//d2:causeDescription/d2:values/d2:value", default="", namespaces=NS)
                 cauza_type = record.findtext(".//d2:causeType", default="other", namespaces=NS)
+                comment_nl = record.findtext(".//d2:generalPublicComment/d2:comment/d2:values/d2:value", default="", namespaces=NS)
 
                 delay_val = record.findtext(".//d2:delayTimeValue", default="0", namespaces=NS)
                 try:
@@ -289,32 +301,22 @@ def preia_trafic_live() -> List[Dict]:
 
                 abnormal_type = record.findtext("d2:abnormalTrafficType", default="", namespaces=NS)
                 management_type = record.findtext("d2:roadOrCarriagewayOrLaneManagementType", default="", namespaces=NS)
-                comment_nl = record.findtext(".//d2:generalPublicComment/d2:comment/d2:values/d2:value", default="", namespaces=NS)
                 lat = record.findtext(".//d2:locationForDisplay/d2:latitude", default="", namespaces=NS)
                 lon = record.findtext(".//d2:locationForDisplay/d2:longitude", default="", namespaces=NS)
-
                 direction_coded = record.findtext(".//d2:alertCDirectionCoded", default="", namespaces=NS)
                 direction_text = "pozitiv" if direction_coded == "positive" else "negativ" if direction_coded == "negative" else ""
-
                 carriageway = record.findtext(".//d2:carriageway", default="", namespaces=NS)
                 lane = record.findtext(".//d2:lane", default="", namespaces=NS)
-                time_start = record.findtext(".//d2:overallStartTime", default="", namespaces=NS)
                 time_end = record.findtext(".//d2:overallEndTime", default="", namespaces=NS)
 
-                # Obtine road_number si locatie din GPS
-                road_number = ""
-                locatie_gps = ""
-                for sursa in [sit_id, rec_id]:
-                m = re.search(r'(?:^|_)([AENB]\d{1,3})(?:_|$)', sursa, re.IGNORECASE)
-                       if m:
-                           road_number = m.group(1).upper()
-                           break 
+                # Extrage numar drum din ID (fara Nominatim la incarcare)
+                road_number = extrage_drum_din_id(sit_id, rec_id, comment_nl)
 
                 alerte.append({
                     "situationId": sit_id,
                     "recordId": rec_id,
                     "recordType": rec_type,
-                                  "cauza_nl": cauza_nl,
+                    "cauza_nl": cauza_nl,
                     "cauza_type": cauza_type,
                     "delay_minutes": delay_minutes,
                     "queue_length_km": queue_length_km,
@@ -326,37 +328,35 @@ def preia_trafic_live() -> List[Dict]:
                     "direction": direction_text,
                     "carriageway": carriageway,
                     "lane": lane,
-                    "time_start": time_start,
                     "time_end": time_end,
                     "creation_time": creation_time,
                     "road_number": road_number,
-                    "locatie_gps": locatie_gps,
                 })
 
         print(f"   📡 DATEX II: {len(alerte)} înregistrări preluate")
     except Exception as e:
-        print(f"⚠️ Eroare API DATEX II: {e}")
+        print(f"⚠️ Eroare DATEX II: {e}")
     return alerte
 
 # ==========================================
 # EMOJI SI CATEGORIE
 # ==========================================
-def determina_emoji_si_categorie(alerta: Dict) -> Tuple[str, str]:
-    rec_type = alerta.get("recordType", "").lower()
+def determina_emoji_si_categorie(alerta):
     cauza_nl = alerta.get("cauza_nl", "").lower()
     cauza_type = alerta.get("cauza_type", "").lower()
     abnormal = alerta.get("abnormal_type", "").lower()
     mgmt = alerta.get("management_type", "").lower()
     comment = alerta.get("comment_nl", "").lower()
+    rec_type = alerta.get("recordType", "").lower()
     combined = f"{rec_type} {cauza_nl} {cauza_type} {abnormal} {mgmt} {comment}"
 
     if cauza_type == "accident" or any(kw in combined for kw in ["ongeval", "ongeluk", "botsing", "accident"]):
         return "💥", "#Accident"
-    elif any(kw in combined for kw in ["flitser", "camera", "snelheid", "snelheidscontrole"]):
+    elif any(kw in combined for kw in ["flitser", "camera", "snelheid"]):
         return "📸", "#Radar_Camera"
     elif any(kw in combined for kw in ["grenscontrole", "grens"]):
         return "🛂", "#Control_Granita"
-    elif any(kw in combined for kw in ["werkzaamheden", "onderhoud", "spoedreparatie", "wegwerkzaamheden"]):
+    elif any(kw in combined for kw in ["werkzaamheden", "onderhoud", "spoedreparatie"]):
         return "🚧", "#Lucrari_Drumuri"
     elif any(kw in combined for kw in ["wegdek", "slechte toestand"]):
         return "⚠️", "#Drum_Deteriorat"
@@ -376,17 +376,19 @@ def determina_emoji_si_categorie(alerta: Dict) -> Tuple[str, str]:
 # ==========================================
 # CONSTRUIESTE MESAJ
 # ==========================================
-def construieste_mesaj_alerta(alerta: Dict, road_tag: str = "") -> str:
+def construieste_mesaj_alerta(alerta, road_tag=""):
     emoji, categorie = determina_emoji_si_categorie(alerta)
 
     cauza_nl = alerta.get("cauza_nl", "")
     comment_nl = alerta.get("comment_nl", "")
     road_number = alerta.get("road_number", "")
-    locatie_gps = alerta.get("locatie_gps", "")
     direction = alerta.get("direction", "")
     carriageway = alerta.get("carriageway", "")
     lane = alerta.get("lane", "")
+    lat = alerta.get("latitude", "")
+    lon = alerta.get("longitude", "")
 
+    # Traducere
     try:
         cauza_ro = GoogleTranslator(source='nl', target='ro').translate(cauza_nl) if cauza_nl else ""
     except:
@@ -396,6 +398,20 @@ def construieste_mesaj_alerta(alerta: Dict, road_tag: str = "") -> str:
         comment_ro = GoogleTranslator(source='nl', target='ro').translate(comment_nl) if comment_nl else ""
     except:
         comment_ro = comment_nl
+
+    # Obtine locatia din GPS (cu cache, timeout scurt)
+    locatie_text = ""
+    road_from_gps = ""
+    if lat and lon:
+        result = get_locatie_text(lat, lon)
+        if isinstance(result, tuple):
+            road_from_gps, locatie_text = result
+        else:
+            locatie_text = result
+
+    # Foloseste road_number din GPS daca nu avem din ID
+    if not road_number and road_from_gps:
+        road_number = road_from_gps
 
     cw_map = {
         "mainCarriageway": "carosabil principal",
@@ -407,7 +423,6 @@ def construieste_mesaj_alerta(alerta: Dict, road_tag: str = "") -> str:
         "leftLane": "banda stanga",
     }
     cw_ro = cw_map.get(carriageway, "")
-
     lane_map = {"rightLane": "banda dreapta", "leftLane": "banda stanga", "middleLane": "banda mijloc"}
     lane_ro = lane_map.get(lane, "")
 
@@ -422,9 +437,10 @@ def construieste_mesaj_alerta(alerta: Dict, road_tag: str = "") -> str:
         postare += f" pe <b>{road_number}</b>"
     postare += ".\n"
 
+    # Locatie
     locatie_parts = []
-    if locatie_gps:
-        locatie_parts.append(locatie_gps)
+    if locatie_text:
+        locatie_parts.append(locatie_text)
     if cw_ro:
         locatie_parts.append(cw_ro)
     if lane_ro:
@@ -457,14 +473,13 @@ def construieste_mesaj_alerta(alerta: Dict, road_tag: str = "") -> str:
     return postare
 
 # ==========================================
-# SCRAPER FNV
+# FNV SCRAPER
 # ==========================================
 def preia_stiri_fnv():
     stiri = []
-    url = "https://www.fnv.nl/over-de-fnv/nieuws"
     try:
         from bs4 import BeautifulSoup
-        resp = requests.get(url, timeout=15)
+        resp = requests.get("https://www.fnv.nl/over-de-fnv/nieuws", timeout=15)
         soup = BeautifulSoup(resp.text, 'html.parser')
         items = soup.find_all('a', class_=re.compile(r'nieuwsoverzicht__item'))
         for item in items[:5]:
@@ -474,20 +489,20 @@ def preia_stiri_fnv():
             titlu_tag = item.find('h3', class_='nieuwsoverzicht__item-title')
             titlu = titlu_tag.text.strip() if titlu_tag else ""
             desc_tag = item.find('div', class_='nieuwsoverzicht__item-content')
-            descriere = desc_tag.text.strip() if desc_tag else "Noutate sindicală FNV."
+            descriere = desc_tag.text.strip() if desc_tag else "Noutate FNV."
             if titlu and link:
                 stiri.append({"title": titlu, "link": link, "description": descriere})
     except Exception as e:
-        print(f"⚠️ Eroare scraper FNV: {e}")
+        print(f"⚠️ FNV: {e}")
     return stiri
 
 # ==========================================
 # WORKER LOOP
 # ==========================================
 def worker_loop():
-    print(f"🚀 Pornire Olanda Bot v8.0 (DATEX II + GPS): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🚀 Olanda Bot v9.0: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     if not all([TELEGRAM_TOKEN, CANAL_DESTINATIE]):
-        print("❌ EROARE: Configurație incompletă!")
+        print("❌ Configurație incompletă!")
         return
 
     init_db()
@@ -506,22 +521,4 @@ def worker_loop():
                 queue = obs.get("queue_length_km", 0)
                 emoji, categorie = determina_emoji_si_categorie(obs)
 
-                # Trimite doar daca are delay SAU coada SAU e accident/inchidere
-                categorii_importante = ["#Accident", "#Control_Granita"]
-                are_impact = (delay > 0 or queue > 0 or categorie in categorii_importante)
-                if not are_impact:
-                    continue
-
-                obs_hash = f"D2_{rec_id}_{int(delay // 5)}_{int(queue * 2)}"
-                if is_blacklisted(obs_hash):
-                    continue
-
-                mesaj = construieste_mesaj_alerta(obs)
-                if trimite_telegram(mesaj):
-                    add_to_blacklist(obs_hash)
-                    road = obs.get("road_number", "?")
-                    salveaza_stire_in_memorie(
-                        f"{categorie} {road}: {obs.get('cauza_nl', '')} | delay={delay:.0f}min queue={queue:.1f}km"
-                )
-                print(f"   ✅ [{road}] {rec_id[:30]} | {categorie} | delay={delay:.0f}min | queue={queue:.1f}km")
-                time.sleep(2)
+     
