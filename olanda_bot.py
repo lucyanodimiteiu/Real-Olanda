@@ -124,9 +124,8 @@ def salveaza_stire_in_memorie(text_rezumat):
 # REVERSE GEOCODING
 # ==========================================
 def get_locatie_din_coordonate(lat: str, lon: str) -> Tuple[str, str]:
-    """Returneaza (road_number, locatie_text) din coordonate GPS."""
-    if not lat or not lon:
-        return "", ""
+    """Returneaza (road_number, locatie_text) - fara Nominatim."""
+    return "", ""
     cache_key = f"{lat},{lon}"
     if cache_key in LOCATIE_CACHE:
         return LOCATIE_CACHE[cache_key]
@@ -303,13 +302,19 @@ def preia_trafic_live() -> List[Dict]:
                 time_end = record.findtext(".//d2:overallEndTime", default="", namespaces=NS)
 
                 # Obtine road_number si locatie din GPS
-                road_number, locatie_gps = get_locatie_din_coordonate(lat, lon)
+                road_number = ""
+                locatie_gps = ""
+                for sursa in [sit_id, rec_id]:
+                m = re.search(r'(?:^|_)([AENB]\d{1,3})(?:_|$)', sursa, re.IGNORECASE)
+                       if m:
+                           road_number = m.group(1).upper()
+                           break 
 
                 alerte.append({
                     "situationId": sit_id,
                     "recordId": rec_id,
                     "recordType": rec_type,
-                    "cauza_nl": cauza_nl,
+                                  "cauza_nl": cauza_nl,
                     "cauza_type": cauza_type,
                     "delay_minutes": delay_minutes,
                     "queue_length_km": queue_length_km,
