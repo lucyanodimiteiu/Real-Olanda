@@ -1,6 +1,6 @@
 import os
 import sys
-sys.stdout.reconfigure(line_buffering=True)
+sys.stdout.reconfigure(line_buffering=Tru
 import time
 import hashlib
 import json
