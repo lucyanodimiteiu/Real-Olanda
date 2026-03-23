@@ -127,30 +127,41 @@ def salveaza_stire_in_memorie(text_rezumat):
 # ==========================================
 # REVERSE GEOCODING - obtine numele locatiei din coordonate
 # ==========================================
-def get_locatie_din_coordonate(lat: str, lon: str) -> str:
+def get_locatie_din_coordonate(lat: str, lon: str) -> tuple:
+    """Returneaza (road_number, locatie_descriere)"""
     if not lat or not lon:
-        return ""
-    cache_key = f"{lat:.4f},{lon:.4f}" if isinstance(lat, float) else f"{lat},{lon}"
+        return "", ""
+    cache_key = f"{lat},{lon}"
     if cache_key in LOCATIE_CACHE:
         return LOCATIE_CACHE[cache_key]
     try:
-        url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json&zoom=12&accept-language=ro"
+        url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json&zoom=14&accept-language=nl"
         resp = requests.get(url, headers={"User-Agent": "OlandaBot/7.0"}, timeout=5)
         data = resp.json()
         addr = data.get("address", {})
-        # Construim locatia din componente relevante
+        
+        # Extrage numarul drumului din campul 'road'
+        road_raw = addr.get("road", "") or ""
+        road_number = ""
+        match = re.search(r'\b([AaNnBb]\d{1,3})\b', road_raw)
+        if match:
+            road_number = match.group(1).upper()
+        
+        # Construim locatia
+        city = (addr.get("city", "") or addr.get("town", "") or 
+                addr.get("village", "") or addr.get("municipality", "") or "")
         parts = []
-        road = addr.get("road", "") or addr.get("motorway", "")
-        city = addr.get("city", "") or addr.get("town", "") or addr.get("village", "") or addr.get("municipality", "")
-        if road:
-            parts.append(road)
+        if road_raw and road_raw != road_number:
+            parts.append(road_raw)
         if city:
             parts.append(city)
-        locatie = ", ".join(parts) if parts else addr.get("display_name", "")[:60]
-        LOCATIE_CACHE[cache_key] = locatie
-        return locatie
+        locatie = ", ".join(parts) if parts else ""
+        
+        result = (road_number, locatie)
+        LOCATIE_CACHE[cache_key] = result
+        return result
     except:
-        return ""
+        return "", ""
 
 # ==========================================
 # UTILITARE AI (DeepSeek pentru stiri RSS/FNV)
@@ -300,7 +311,9 @@ def preia_trafic_live() -> List[Dict]:
                 # Obtine locatia din coordonate GPS (cu cache)
                 locatie_gps = ""
                 if lat and lon:
-                    locatie_gps = get_locatie_din_coordonate(lat, lon)
+                    road_from_gps, locatie_gps = get_locatie_din_coordonate(lat, lon)
+if not road_number and road_from_gps:
+    road_number = road_from_gps
 
                 alerte.append({
                     "situationId": sit_id,
