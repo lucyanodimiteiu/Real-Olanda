@@ -505,4 +505,7 @@ def worker_loop():
                     add_to_blacklist(obs_hash)
                     road = obs.get("road_number", "?")
                     salveaza_stire_in_memorie(
-                        f"{categorie} {road}"
+                        f"{categorie} {road}: {obs.get('cauza_nl', '')} | delay={delay:.0f}min queue={queue:.1f}km"
+                )
+                print(f"   ✅ [{road}] {rec_id[:30]} | {categorie} | delay={delay:.0f}min | queue={queue:.1f}km")
+                time.sleep(2)
