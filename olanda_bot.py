@@ -521,4 +521,155 @@ def worker_loop():
                 queue = obs.get("queue_length_km", 0)
                 emoji, categorie = determina_emoji_si_categorie(obs)
 
-     
+                categorii_importante = ["#Accident", "#Control_Granita"]
+                are_impact = delay > 0 or queue > 0 or categorie in categorii_importante
+                if not are_impact:
+                    continue
+
+                obs_hash = f"D2_{rec_id}_{int(delay // 5)}_{int(queue * 2)}"
+                if is_blacklisted(obs_hash):
+                    continue
+
+                mesaj = construieste_mesaj_alerta(obs)
+                if trimite_telegram(mesaj):
+                    add_to_blacklist(obs_hash)
+                    road = obs.get("road_number", "?")
+                    salveaza_stire_in_memorie(
+                        f"{categorie} {road}: {obs.get('cauza_nl', '')} | {delay:.0f}min {queue:.1f}km"
+                    )
+                    print(f"   ✅ [{road}] {rec_id[:25]} | {categorie} | {delay:.0f}min | {queue:.1f}km")
+                    time.sleep(2)
+                time.sleep(0.3)
+
+            # 2. RSS TTM
+            for rss_url in RSS_FEEDS:
+                try:
+                    feed = feedparser.parse(rss_url)
+                except:
+                    continue
+                if not hasattr(feed, "entries"):
+                    continue
+                for entry in feed.entries[:3]:
+                    titlu = getattr(entry, "title", None)
+                    link = getattr(entry, "link", None)
+                    if not link or not titlu:
+                        continue
+                    h = hash_text(link)
+                    if is_blacklisted(h):
+                        continue
+                    descriere = getattr(entry, "description", "") or getattr(entry, "summary", "")
+                    res = proceseaza_stire_ai(titlu, descriere, stiri_vechi_db)
+                    if res:
+                        if res.get("categorie") == "IGNORE" or res.get("duplicat", False):
+                            add_to_blacklist(h)
+                        else:
+                            text_rezumat = res.get('text_ro', '')
+                            postare = (f"{res.get('emoji', '📌')} <b>{res.get('categorie')}</b>\n\n"
+                                       f"{text_rezumat}\n\n"
+                                       f"🔗 <a href='{link}'>Sursa</a>\n\n<i>{SEMNATURA}</i>")
+                            if trimite_telegram_cu_audio(postare, f"{res.get('categorie','')} {text_rezumat}"):
+                                add_to_blacklist(h)
+                                salveaza_stire_in_memorie(text_rezumat)
+                                print(f"   ✅ [TTM] {titlu[:40]}")
+                                time.sleep(2)
+                    time.sleep(1)
+
+            # 3. FNV
+            for stire in preia_stiri_fnv():
+                titlu = stire.get("title")
+                link = stire.get("link")
+                if not link or not titlu:
+                    continue
+                h = hash_text(link)
+                if is_blacklisted(h):
+                    continue
+                res = proceseaza_stire_ai(titlu, stire.get("description", ""), stiri_vechi_db)
+                if res:
+                    if res.get("categorie") == "IGNORE" or res.get("duplicat", False):
+                        add_to_blacklist(h)
+                    else:
+                        text_rezumat = res.get('text_ro', '')
+                        postare = (f"{res.get('emoji', '📌')} <b>{res.get('categorie')}</b>\n\n"
+                                   f"{text_rezumat}\n\n"
+                                   f"🔗 <a href='{link}'>Sursa FNV</a>\n\n<i>{SEMNATURA}</i>")
+                        if trimite_telegram_cu_audio(postare, f"FNV {text_rezumat}"):
+                            add_to_blacklist(h)
+                            salveaza_stire_in_memorie(text_rezumat)
+                            print(f"   ✅ [FNV] {titlu[:40]}")
+                            time.sleep(2)
+                time.sleep(1)
+
+            time.sleep(VERIFY_INTERVAL)
+
+        except Exception as e:
+            print(f"❌ EROARE: {e}")
+            import traceback
+            traceback.print_exc()
+            time.sleep(10)
+
+# ==========================================
+# COMENZI TELEGRAM
+# ==========================================
+async def cmd_drum(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    args = context.args
+    if not args:
+        trimite_telegram("❓ <b>Utilizare:</b> <code>/drum A2</code>", chat_id=chat_id)
+        return
+    road_query = args[0].upper().strip()
+    trimite_telegram(f"🔍 Caut <b>{road_query}</b>...", chat_id=chat_id)
+    try:
+        alerte = preia_trafic_live()
+    except Exception as e:
+        trimite_telegram(f"❌ Eroare: {e}", chat_id=chat_id)
+        return
+    alerte_drum = [a for a in alerte if a.get("road_number", "").upper() == road_query]
+    if not alerte_drum:
+        trimite_telegram(
+            f"✅ <b>{road_query}</b>: Fără incidente acum.\n<i>{SEMNATURA}</i>",
+            chat_id=chat_id)
+        return
+    trimite_telegram(
+        f"🚦 <b>{road_query}</b> — {len(alerte_drum)} incident(e) • {datetime.now().strftime('%H:%M')}",
+        chat_id=chat_id)
+    time.sleep(1)
+    for a in alerte_drum[:10]:
+        trimite_telegram(construieste_mesaj_alerta(a, road_tag=f"#{road_query}"), chat_id=chat_id)
+        time.sleep(1)
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    trimite_telegram(
+        f"🤖 <b>Olanda Bot v9.0</b>\n✅ Activ\n📡 DATEX II\n"
+        f"🕐 {VERIFY_INTERVAL}s\n📅 {datetime.now().strftime('%d/%m %H:%M')}\n\n"
+        f"• <code>/drum A2</code>\n• <code>/status</code>\n\n<i>{SEMNATURA}</i>",
+        chat_id=chat_id)
+
+# ==========================================
+# BOT TELEGRAM
+# ==========================================
+def run_telegram_bot():
+    if not TELEGRAM_TOKEN:
+        print("❌ TELEGRAM_TOKEN lipseste.")
+        return
+
+    async def main():
+        app = Application.builder().token(TELEGRAM_TOKEN).build()
+        app.add_handler(CommandHandler("drum", cmd_drum))
+        app.add_handler(CommandHandler("status", cmd_status))
+        print("🤖 Bot Telegram pornit")
+        async with app:
+            await app.start()
+            await app.updater.start_polling(drop_pending_updates=True)
+            while True:
+                await asyncio.sleep(60)
+
+    asyncio.run(main())
+
+# ==========================================
+# MAIN
+# ==========================================
+if __name__ == "__main__":
+    threading.Thread(target=worker_loop, daemon=True).start()
+    threading.Thread(target=run_telegram_bot, daemon=True).start()
+    run_server()
