@@ -136,10 +136,22 @@ def get_locatie_din_coordonate(lat: str, lon: str) -> Tuple[str, str]:
         data = resp.json()
         addr = data.get("address", {})
         road_raw = addr.get("road", "") or ""
+        
+        # Cauta numarul drumului in toate campurile posibile
         road_number = ""
-        match = re.search(r'\b([AaNnBbEe]\d{1,3})\b', road_raw)
-        if match:
-            road_number = match.group(1).upper()
+        for field in [road_raw, addr.get("motorway", ""), addr.get("trunk", ""),
+                      data.get("display_name", "")]:
+            match = re.search(r'\b([AENB]\d{1,3})\b', str(field), re.IGNORECASE)
+            if match:
+                road_number = match.group(1).upper()
+                break
+        
+        # Daca nu gasit, incearca format "A 2" sau "N 11"
+        if not road_number:
+            match = re.search(r'\b([AENB])\s(\d{1,3})\b', road_raw, re.IGNORECASE)
+            if match:
+                road_number = f"{match.group(1).upper()}{match.group(2)}"
+
         city = (addr.get("city", "") or addr.get("town", "") or
                 addr.get("village", "") or addr.get("municipality", "") or "")
         parts = []
@@ -154,7 +166,6 @@ def get_locatie_din_coordonate(lat: str, lon: str) -> Tuple[str, str]:
     except:
         LOCATIE_CACHE[cache_key] = ("", "")
         return "", ""
-
 # ==========================================
 # UTILITARE AI
 # ==========================================
