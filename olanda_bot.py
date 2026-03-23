@@ -154,7 +154,7 @@ def get_locatie_text(lat, lon):
         return LOCATIE_CACHE[cache_key]
     try:
         url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json&zoom=12&accept-language=nl"
-        resp = requests.get(url, headers={"User-Agent": "OlandaBot/9.0"}, timeout=4)
+        resp = requests.get(url, headers={"User-Agent": "OlandaBot/9.0"}, timeout=8)
         data = resp.json()
         addr = data.get("address", {})
         city = (addr.get("city", "") or addr.get("town", "") or
