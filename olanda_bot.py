@@ -120,19 +120,12 @@ def salveaza_stire_in_memorie(text_rezumat):
 # ==========================================
 # EXTRAGE NUMAR DRUM DIN ID SITUATIE
 # ==========================================
-def extrage_drum_din_id(sit_id, rec_id, comment_nl=""):
-    """Extrage numarul drumului (A2, N11 etc.) din ID-urile DATEX II."""
+def extrage_drum_din_id(sit_id, rec_id, extratext=""):
+    """Extrage numarul drumului (A2, N11 etc.)."""
     road_number = ""
-    # Incearca toate sursele
-    for sursa in [sit_id, rec_id, comment_nl]:
+    for sursa in [extratext, sit_id, rec_id]:
         if not sursa:
             continue
-        # Format: _A2_ sau _N11_ sau _A12_ in ID
-        m = re.search(r'(?:^|_)([AENB]\d{1,3})(?:_|$)', str(sursa), re.IGNORECASE)
-        if m:
-            road_number = m.group(1).upper()
-            break
-        # Format mai general: A2, N11, A12 oriunde in text
         m = re.search(r'\b([AENB]\d{1,3})\b', str(sursa), re.IGNORECASE)
         if m:
             road_number = m.group(1).upper()
@@ -309,8 +302,11 @@ def preia_trafic_live():
                 lane = record.findtext(".//d2:lane", default="", namespaces=NS)
                 time_end = record.findtext(".//d2:overallEndTime", default="", namespaces=NS)
 
-                # Extrage numar drum din ID (fara Nominatim la incarcare)
-                road_number = extrage_drum_din_id(sit_id, rec_id, comment_nl)
+                # Extrage numar drum din ID si tag-uri noi (fara Nominatim la incarcare)
+                road_number_tag = record.findtext(".//d2:roadNumber", default="", namespaces=NS)
+                road_name_tag = record.findtext(".//d2:roadName/d2:values/d2:value", default="", namespaces=NS)
+                extratext = f"{road_number_tag} {road_name_tag} {comment_nl}"
+                road_number = extrage_drum_din_id(sit_id, rec_id, extratext)
 
                 alerte.append({
                     "situationId": sit_id,
