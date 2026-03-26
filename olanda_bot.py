@@ -405,7 +405,15 @@ def construieste_mesaj_alerta(alerta, road_tag=""):
         else:
             locatie_text = result
 
-    # Foloseste road_number din GPS daca nu avem din ID
+    # Fallback masiv pentru granițe și zone fără tag
+    if not road_number:
+        import re
+        combined = f"{cauza_nl} {comment_nl} {locatie_text}"
+        m = re.search(r'\b([AEN]\d{1,3})\b', combined, re.IGNORECASE)
+        if m:
+            road_number = m.group(1).upper()
+            
+    # Foloseste road_number din GPS daca nu avem din ID sau fallback
     if not road_number and road_from_gps:
         road_number = road_from_gps
 
