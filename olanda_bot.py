@@ -16,7 +16,6 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from deep_translator import GoogleTranslator
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -384,16 +383,9 @@ def construieste_mesaj_alerta(alerta, road_tag=""):
     lat = alerta.get("latitude", "")
     lon = alerta.get("longitude", "")
 
-    # Traducere
-    try:
-        cauza_ro = GoogleTranslator(source='nl', target='ro').translate(cauza_nl) if cauza_nl else ""
-    except:
-        cauza_ro = cauza_nl
-
-    try:
-        comment_ro = GoogleTranslator(source='nl', target='ro').translate(comment_nl) if comment_nl else ""
-    except:
-        comment_ro = comment_nl
+    # FARA TRADUCERE PENTRU EVENIMENTE
+    cauza_ro = cauza_nl
+    comment_ro = comment_nl
 
     # Obtine locatia din GPS (cu cache, timeout scurt)
     locatie_text = ""
