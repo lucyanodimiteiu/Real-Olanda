@@ -139,7 +139,7 @@ def extrage_drum_din_id(sit_id, rec_id, extratext=""):
 LOCATIE_CACHE = {}
 
 def get_locatie_text(lat, lon):
-    """Returneaza numele locatiei din GPS, cu cache. Foloseste zoom 17 pentru a gasi autostrazile."""
+    """Returneaza numele locatiei din GPS, cu cache. Foloseste zoom 17 pentru a gasi autostrazile si drumurile locale."""
     if not lat or not lon:
         return ""
     cache_key = f"{lat},{lon}"
@@ -147,38 +147,43 @@ def get_locatie_text(lat, lon):
         return LOCATIE_CACHE[cache_key]
     try:
         url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json&zoom=17&accept-language=nl"
-        resp = requests.get(url, headers={"User-Agent": "OlandaBot/10.0 (ReverseGeocoding)"}, timeout=8)
+        resp = requests.get(url, headers={"User-Agent": "OlandaBot/10.1 (ReverseGeocodingImproved)"}, timeout=8)
         data = resp.json()
         addr = data.get("address", {})
-        
+
         city = (addr.get("city", "") or addr.get("town", "") or
                 addr.get("village", "") or addr.get("municipality", "") or "")
-                
-        road = (addr.get("road", "") or addr.get("highway", "") or 
-                addr.get("motorway", "") or addr.get("trunk", ""))
-                
-        # Incearca sa gaseasca si numarul drumului din GPS (ex: A4, N206)
-        road_from_gps = ""
+
+        road = (addr.get("road", "") or addr.get("highway", "") or
+                addr.get("motorway", "") or addr.get("trunk", "") or "") # Adaugat "trunk" pentru drumuri principale
+
+        # Incercam sa gasim numarul de autostrada (A/N) prima data
+        road_identifier = ""
         m = re.search(r'\b([AEN]\d{1,3})\b', road, re.IGNORECASE)
         if m:
-            road_from_gps = m.group(1).upper()
-            
-        parts = []
-        if road and not road_from_gps:
-            parts.append(road)
+            road_identifier = m.group(1).upper()
+        elif road:  # Daca nu e autostrada, folosim numele drumului local
+            road_identifier = road
+
+        locatie_parts = []
+        # Adaugam numele drumului la inceput daca exista si nu e deja in city
+        if road_identifier and not re.match(r'^[AN]\d+$', road_identifier) and road_identifier.lower() not in city.lower():
+            locatie_parts.append(road_identifier)
         if city:
-            parts.append(city)
-            
-        locatie = ", ".join(parts) if parts else city
-        result = (road_from_gps, locatie)
+            locatie_parts.append(city)
+
+        locatie = ", ".join(locatie_parts) if locatie_parts else (road_identifier if road_identifier else "")
+
+        result = (road_identifier, locatie)
         LOCATIE_CACHE[cache_key] = result
-        
+
         # Protejam API-ul Nominatim adaugand o mica pauza
         import time
-        time.sleep(1.0)
-        
+        time.sleep(1.0) # Pastram pauza de 1 secunda
+
         return result
-    except:
+    except Exception as e: # Catcham exceptia specifica si o printam
+        print(f"⚠️ Eroare Nominatim get_locatie_text: {e}")
         LOCATIE_CACHE[cache_key] = ("", "")
         return ("", "")
 
