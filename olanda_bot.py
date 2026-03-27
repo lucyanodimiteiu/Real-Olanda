@@ -388,7 +388,7 @@ def determina_emoji_si_categorie(alerta):
 # ==========================================
 # CONSTRUIESTE MESAJ
 # ==========================================
-def construieste_mesaj_alerta(alerta, road_tag=""):
+def construieste_mesaj_alerta(alerta, road_tag="") -> str:
     emoji, categorie = determina_emoji_si_categorie(alerta)
 
     cauza_nl = alerta.get("cauza_nl", "")
@@ -412,26 +412,36 @@ def construieste_mesaj_alerta(alerta, road_tag=""):
         comment_ro = comment_nl
 
     # Obtine locatia din GPS (cu cache, timeout scurt)
-    locatie_text = ""
-    road_from_gps = ""
+    locatie_text_initial = "" # Aceasta va fi inlocuita de locatie_text_from_gps daca exista
+    
+    # Obtine locatia si numele drumului de la GPS (Nominatim)
+    locatie_text_from_gps = ""
+    road_identifier_from_gps = ""
     if lat and lon:
-        result = get_locatie_text(lat, lon)
-        if isinstance(result, tuple):
-            road_from_gps, locatie_text = result
-        else:
-            locatie_text = result
+        road_identifier_from_gps, locatie_text_from_gps = get_locatie_text(lat, lon)
 
-    # Fallback masiv pentru granițe și zone fără tag
-    if not road_number:
-        import re
-        combined = f"{alerta.get('cauza_nl','')} {alerta.get('comment_nl','')} {locatie_text}"
-        m = re.search(r'\b([AEN]\d{1,3})\b', combined, re.IGNORECASE)
-        if m:
-            road_number = m.group(1).upper()
-            
-    # Foloseste road_number din GPS daca nu avem din ID sau fallback
-    if not road_number and road_from_gps:
-        road_number = road_from_gps
+    # Decide ce nume de drum vom afisa (pentru "pe <b>{drum}</b>" si hashtag)
+    display_road_name = road_number # Pornim cu ce am primit din DATEX II
+
+    # Daca Nominatim a gasit un identificator de drum (A/N sau nume de strada)
+    if road_identifier_from_gps:
+        is_gps_an = re.match(r'^[AN]\d+$', road_identifier_from_gps, re.IGNORECASE)
+        is_current_an = re.match(r'^[AN]\d+$', display_road_name, re.IGNORECASE)
+        is_current_rws = re.match(r'^RWS\d+_M\d+_.+$', display_road_name) # Verificam daca e un ID RWS generic
+
+        if is_gps_an and not is_current_an: # GPS a gasit A/N, dar cel initial nu era (sau era RWS_ID)
+            display_road_name = road_identifier_from_gps
+        elif not is_gps_an and is_current_rws: # GPS a gasit nume de strada, dar cel initial era RWS_ID
+            display_road_name = road_identifier_from_gps
+        elif not display_road_name and road_identifier_from_gps: # Initial era gol, GPS a gasit ceva
+            display_road_name = road_identifier_from_gps
+        # In alte cazuri (ex: ambele sunt A/N, sau display_road_name era deja un nume de strada bun), pastram display_road_name.
+
+    # Actualizam variabila road_number cu numele de drum pentru afisare
+    road_number = display_road_name
+
+    # Folosim locatie_text_from_gps pentru afisarea detaliata a locatiei daca e disponibila si mai buna
+    locatie_text_for_display = locatie_text_from_gps if locatie_text_from_gps else locatie_text_initial # Fallback la initial
 
     cw_map = {
         "mainCarriageway": "carosabil principal",
@@ -459,8 +469,8 @@ def construieste_mesaj_alerta(alerta, road_tag=""):
 
     # Locatie
     locatie_parts = []
-    if locatie_text:
-        locatie_parts.append(locatie_text)
+    if locatie_text_for_display:
+        locatie_parts.append(locatie_text_for_display)
     if cw_ro:
         locatie_parts.append(cw_ro)
     if lane_ro:
