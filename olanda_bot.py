@@ -139,33 +139,44 @@ def extrage_drum_din_id(sit_id, rec_id, extratext=""):
 LOCATIE_CACHE = {}
 
 def get_locatie_text(lat, lon):
-    """Returneaza numele locatiei din GPS, cu cache."""
+    """Returneaza numele locatiei din GPS, cu cache. Foloseste zoom 17 pentru a gasi autostrazile."""
     if not lat or not lon:
         return ""
     cache_key = f"{lat},{lon}"
     if cache_key in LOCATIE_CACHE:
         return LOCATIE_CACHE[cache_key]
     try:
-        url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json&zoom=12&accept-language=nl"
-        resp = requests.get(url, headers={"User-Agent": "OlandaBot/9.0"}, timeout=8)
+        url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json&zoom=17&accept-language=nl"
+        resp = requests.get(url, headers={"User-Agent": "OlandaBot/10.0 (ReverseGeocoding)"}, timeout=8)
         data = resp.json()
         addr = data.get("address", {})
+        
         city = (addr.get("city", "") or addr.get("town", "") or
                 addr.get("village", "") or addr.get("municipality", "") or "")
-        road = addr.get("road", "") or ""
-        # Incearca sa gaseasca si numarul drumului din GPS
+                
+        road = (addr.get("road", "") or addr.get("highway", "") or 
+                addr.get("motorway", "") or addr.get("trunk", ""))
+                
+        # Incearca sa gaseasca si numarul drumului din GPS (ex: A4, N206)
         road_from_gps = ""
-        m = re.search(r'\b([AENB]\d{1,3})\b', road, re.IGNORECASE)
+        m = re.search(r'\b([AEN]\d{1,3})\b', road, re.IGNORECASE)
         if m:
             road_from_gps = m.group(1).upper()
+            
         parts = []
         if road and not road_from_gps:
             parts.append(road)
         if city:
             parts.append(city)
+            
         locatie = ", ".join(parts) if parts else city
         result = (road_from_gps, locatie)
         LOCATIE_CACHE[cache_key] = result
+        
+        # Protejam API-ul Nominatim adaugand o mica pauza
+        import time
+        time.sleep(1.0)
+        
         return result
     except:
         LOCATIE_CACHE[cache_key] = ("", "")
@@ -408,7 +419,7 @@ def construieste_mesaj_alerta(alerta, road_tag=""):
     # Fallback masiv pentru granițe și zone fără tag
     if not road_number:
         import re
-        combined = f"{cauza_nl} {comment_nl} {locatie_text}"
+        combined = f"{alerta.get('cauza_nl','')} {alerta.get('comment_nl','')} {locatie_text}"
         m = re.search(r'\b([AEN]\d{1,3})\b', combined, re.IGNORECASE)
         if m:
             road_number = m.group(1).upper()
