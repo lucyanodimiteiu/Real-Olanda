@@ -274,80 +274,97 @@ def trimite_telegram_cu_audio(text_html, text_audio):
     return True
 
 # ==========================================
-# DATEX II
+# DATEX II -> MIGRAT LA ANWB
 # ==========================================
 def preia_trafic_live():
     alerte = []
-    url = "https://opendata.ndw.nu/actuele_statusberichten.xml.gz"
+    url = "https://www.anwb.nl/verkeer/filelijst"
     try:
-        resp = requests.get(url, timeout=20)
+        from bs4 import BeautifulSoup
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        resp = requests.get(url, headers=headers, timeout=20)
         resp.raise_for_status()
-        with gzip.GzipFile(fileobj=io.BytesIO(resp.content)) as gz:
-            xml_data = gz.read()
-        root = ET.fromstring(xml_data)
-
-        for situation in root.findall(".//d2:situation", NS):
-            sit_id = situation.get("id", "")
-            for record in situation.findall(".//d2:situationRecord", NS):
-                rec_id = record.get("id", "")
-                rec_type = record.get("{http://www.w3.org/2001/XMLSchema-instance}type", "")
-                creation_time = record.findtext("d2:situationRecordCreationTime", default="", namespaces=NS)
-                cauza_nl = record.findtext(".//d2:causeDescription/d2:values/d2:value", default="", namespaces=NS)
-                cauza_type = record.findtext(".//d2:causeType", default="other", namespaces=NS)
-                comment_nl = record.findtext(".//d2:generalPublicComment/d2:comment/d2:values/d2:value", default="", namespaces=NS)
-
-                delay_val = record.findtext(".//d2:delayTimeValue", default="0", namespaces=NS)
-                try:
-                    delay_minutes = float(delay_val) / 60.0
-                except:
-                    delay_minutes = 0.0
-
-                ql = record.findtext("d2:queueLength", default="0", namespaces=NS)
-                try:
-                    queue_length_km = int(ql) / 1000.0
-                except:
-                    queue_length_km = 0.0
-
-                abnormal_type = record.findtext("d2:abnormalTrafficType", default="", namespaces=NS)
-                management_type = record.findtext("d2:roadOrCarriagewayOrLaneManagementType", default="", namespaces=NS)
-                lat = record.findtext(".//d2:locationForDisplay/d2:latitude", default="", namespaces=NS)
-                lon = record.findtext(".//d2:locationForDisplay/d2:longitude", default="", namespaces=NS)
-                direction_coded = record.findtext(".//d2:alertCDirectionCoded", default="", namespaces=NS)
-                direction_text = "pozitiv" if direction_coded == "positive" else "negativ" if direction_coded == "negative" else ""
-                carriageway = record.findtext(".//d2:carriageway", default="", namespaces=NS)
-                lane = record.findtext(".//d2:lane", default="", namespaces=NS)
-                time_end = record.findtext(".//d2:overallEndTime", default="", namespaces=NS)
-
-                # Extrage numar drum din ID si tag-uri noi (fara Nominatim la incarcare)
-                road_number_tag = record.findtext(".//d2:roadNumber", default="", namespaces=NS)
-                road_name_tag = record.findtext(".//d2:roadName/d2:values/d2:value", default="", namespaces=NS)
-                extratext = f"{road_number_tag} {road_name_tag} {comment_nl}"
-                road_number = extrage_drum_din_id(sit_id, rec_id, extratext)
-
-                alerte.append({
-                    "situationId": sit_id,
-                    "recordId": rec_id,
-                    "recordType": rec_type,
-                    "cauza_nl": cauza_nl,
-                    "cauza_type": cauza_type,
-                    "delay_minutes": delay_minutes,
-                    "queue_length_km": queue_length_km,
-                    "abnormal_type": abnormal_type,
-                    "management_type": management_type,
-                    "comment_nl": comment_nl,
-                    "latitude": lat,
-                    "longitude": lon,
-                    "direction": direction_text,
-                    "carriageway": carriageway,
-                    "lane": lane,
-                    "time_end": time_end,
-                    "creation_time": creation_time,
-                    "road_number": road_number,
-                })
-
-        print(f"   📡 DATEX II: {len(alerte)} înregistrări preluate")
+        
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        data = None
+        s = soup.find('script', id='__NEXT_DATA__')
+        if s:
+            data = json.loads(s.string)
+            
+        def find_roads(d):
+            if isinstance(d, dict):
+                if 'roads' in d and isinstance(d['roads'], list): return d['roads']
+                for k, v in d.items():
+                    res = find_roads(v)
+                    if res: return res
+            elif isinstance(d, list):
+                for i in d:
+                    res = find_roads(i)
+                    if res: return res
+            return None
+            
+        roads = find_roads(data) if data else None
+        
+        if roads:
+            for road_obj in roads:
+                road_num = road_obj.get("road", "")
+                segments = road_obj.get("segments", [])
+                for seg_list in segments:
+                    for inc in seg_list:
+                        inc_id = str(inc.get("id", ""))
+                        rec_type = inc.get("category", "") # jams, roadworks, radars
+                        cauza_type = inc.get("incidentType", "")
+                        
+                        reason = inc.get("reason", "")
+                        events = inc.get("events", [])
+                        if not reason and events:
+                            reason = ". ".join([e.get("text", "") for e in events])
+                            
+                        queue = inc.get("distance", 0)
+                        queue_km = float(queue) / 1000.0 if queue else 0.0
+                        
+                        delay_sec = inc.get("delay", 0)
+                        delay_min = float(delay_sec) / 60.0 if delay_sec else 0.0
+                        
+                        lat = inc.get("coordinates", {}).get("latitude", "")
+                        lon = inc.get("coordinates", {}).get("longitude", "")
+                        if not lat and "fromLoc" in inc:
+                            lat = inc["fromLoc"].get("lat", "")
+                            lon = inc["fromLoc"].get("lon", "")
+                            
+                        seg_data = inc.get("segment", {})
+                        dir_text = ""
+                        if seg_data.get("start") and seg_data.get("end"):
+                            dir_text = f"{seg_data['start']} -> {seg_data['end']}"
+                        else:
+                            dir_text = inc.get("from", "")
+                            
+                        time_end = inc.get("stop", "")
+                        time_start = inc.get("start", "")
+                        
+                        alerte.append({
+                            "situationId": f"{road_num}_{inc_id}",
+                            "recordId": inc_id,
+                            "recordType": rec_type,
+                            "cauza_nl": reason,
+                            "cauza_type": cauza_type,
+                            "delay_minutes": delay_min,
+                            "queue_length_km": queue_km,
+                            "abnormal_type": "",
+                            "management_type": "",
+                            "comment_nl": "",
+                            "latitude": lat,
+                            "longitude": lon,
+                            "direction": dir_text,
+                            "carriageway": "",
+                            "lane": "",
+                            "time_end": time_end,
+                            "creation_time": time_start,
+                            "road_number": road_num,
+                        })
+        print(f"   📡 ANWB: {len(alerte)} incidente preluate")
     except Exception as e:
-        print(f"⚠️ Eroare DATEX II: {e}")
+        print(f"⚠️ Eroare ANWB: {e}")
     return alerte
 
 # ==========================================
@@ -364,11 +381,11 @@ def determina_emoji_si_categorie(alerta):
 
     if cauza_type == "accident" or any(kw in combined for kw in ["ongeval", "ongeluk", "botsing", "accident"]):
         return "💥", "#Accident"
-    elif any(kw in combined for kw in ["flitser", "camera", "snelheid"]):
+    elif any(kw in combined for kw in ["flitser", "camera", "snelheid", "radars"]):
         return "📸", "#Radar_Camera"
     elif any(kw in combined for kw in ["grenscontrole", "grens"]):
         return "🛂", "#Control_Granita"
-    elif any(kw in combined for kw in ["werkzaamheden", "onderhoud", "spoedreparatie"]):
+    elif any(kw in combined for kw in ["werkzaamheden", "onderhoud", "spoedreparatie", "roadworks", "road-closed"]):
         return "🚧", "#Lucrari_Drumuri"
     elif any(kw in combined for kw in ["wegdek", "slechte toestand"]):
         return "⚠️", "#Drum_Deteriorat"
@@ -376,7 +393,7 @@ def determina_emoji_si_categorie(alerta):
         return "⛔", "#Banda_Inchisa"
     elif any(kw in combined for kw in ["stilstaand", "stationarytraffic"]):
         return "🛑", "#Trafic_Stationar"
-    elif any(kw in combined for kw in ["langzaam", "slowtraffic", "queuingtraffic", "file"]):
+    elif any(kw in combined for kw in ["langzaam", "slowtraffic", "queuingtraffic", "file", "jams"]):
         return "🚗", "#Trafic_Lent"
     elif any(kw in combined for kw in ["brug", "open"]):
         return "🌉", "#Pod_Deschis"
