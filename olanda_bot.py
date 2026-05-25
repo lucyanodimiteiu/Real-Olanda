@@ -288,7 +288,7 @@ Răspunde STRICT JSON:
 # ==========================================
 # TELEGRAM
 # ==========================================
-def trimite_telegram(text_final, chat_id=None):
+def trimite_telegram(text_final, chat_id=None, preview=False):
     if not TELEGRAM_TOKEN:
         return False
     destinatie = chat_id or CANAL_DESTINATIE
@@ -300,7 +300,7 @@ def trimite_telegram(text_final, chat_id=None):
             "chat_id": destinatie,
             "text": text_final[:4096],
             "parse_mode": "HTML",
-            "disable_web_page_preview": True
+            "disable_web_page_preview": not preview
         }, timeout=15)
         if r.status_code != 200:
             print(f"❌ Telegram ({r.status_code}): {r.text[:100]}")
@@ -775,8 +775,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
             
         msg = f"🛣️ <b>Traseu {oras1} ➡️ {oras2}</b>\n"
-        msg += f"Autostrăzi folosite: <b>{', '.join(drumuri)}</b>\n\n"
-        trimite_telegram(msg + "Verific alertele LIVE...", chat_id=chat_id)
+        msg += f"Autostrăzi folosite: <b>{', '.join(drumuri)}</b>\n"
+        
+        gmaps_url = f"https://www.google.com/maps/dir/?api=1&origin={lat1},{lon1}&destination={lat2},{lon2}&travelmode=driving"
+        msg += f"<a href='{gmaps_url}'>🗺️ Deschide Harta (Google Maps)</a>\n\n"
+        
+        trimite_telegram(msg + "Verific alertele LIVE...", chat_id=chat_id, preview=True)
         
         alerte_live = preia_trafic_live()
         alerte_traseu = []
