@@ -19,7 +19,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from deep_translator import GoogleTranslator
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 # ==========================================
 # CONFIGURAȚII
@@ -88,6 +88,9 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS stiri_recente
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   text_rezumat TEXT, data_postare TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS alerte_istoric
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  road TEXT, postare TEXT, data_postare TEXT)''')
     conn.commit()
     conn.close()
 
@@ -114,6 +117,33 @@ def salveaza_stire_in_memorie(text_rezumat):
         conn.commit()
     except:
         pass
+    finally:
+        conn.close()
+
+def salveaza_alerta_istoric(road, postare):
+    if not road: return
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('INSERT INTO alerte_istoric (road, postare, data_postare) VALUES (?, ?, ?)',
+                  (road.upper(), postare, datetime.now().isoformat()))
+        c.execute('DELETE FROM alerte_istoric WHERE id NOT IN '
+                  '(SELECT id FROM alerte_istoric ORDER BY id DESC LIMIT 1000)')
+        conn.commit()
+    except Exception as e:
+        print(f"Eroare db istoric: {e}")
+    finally:
+        conn.close()
+
+def preia_istoric_drum(road, limita=3):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        return [row[0] for row in c.execute(
+            'SELECT postare FROM alerte_istoric WHERE road = ? ORDER BY id DESC LIMIT ?',
+            (road.upper(), limita)).fetchall()]
+    except:
+        return []
     finally:
         conn.close()
 
@@ -581,6 +611,7 @@ def worker_loop():
                 if trimite_telegram(mesaj):
                     add_to_blacklist(obs_hash)
                     road = obs.get("road_number", "?")
+                    salveaza_alerta_istoric(road, mesaj)
                     salveaza_stire_in_memorie(
                         f"{categorie} {road}: {obs.get('cauza_nl', '')} | {delay:.0f}min {queue:.1f}km"
                     )
@@ -692,6 +723,24 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• <code>/drum A2</code>\n• <code>/status</code>\n\n<i>{SEMNATURA}</i>",
         chat_id=chat_id)
 
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    text = update.message.text.strip() if update.message and update.message.text else ""
+    
+    # Check if text is a valid road number (e.g. A2, N11)
+    if re.match(r'^[A-Za-z]\d{1,3}$', text):
+        road_query = text.upper()
+        
+        istoric = preia_istoric_drum(road_query, limita=3)
+        if not istoric:
+            trimite_telegram(f"ℹ️ Nu am găsit nicio alertă recentă în istoric pentru <b>{road_query}</b>.", chat_id=chat_id)
+        else:
+            trimite_telegram(f"📚 <b>Ultimele {len(istoric)} alerte pentru {road_query}:</b>", chat_id=chat_id)
+            time.sleep(1)
+            for postare in reversed(istoric): # aratam de la vechi la nou
+                trimite_telegram(postare, chat_id=chat_id)
+                time.sleep(1)
+
 # ==========================================
 # BOT TELEGRAM
 # ==========================================
@@ -704,6 +753,7 @@ def run_telegram_bot():
         app = Application.builder().token(TELEGRAM_TOKEN).build()
         app.add_handler(CommandHandler("drum", cmd_drum))
         app.add_handler(CommandHandler("status", cmd_status))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
         print("🤖 Bot Telegram pornit")
         async with app:
             await app.start()
