@@ -385,12 +385,12 @@ def determina_emoji_si_categorie(alerta):
         return "📸", "#Radar_Camera"
     elif any(kw in combined for kw in ["grenscontrole", "grens"]):
         return "🛂", "#Control_Granita"
+    elif any(kw in combined for kw in ["carriagewayClosures", "laneClosures", "afgesloten", "road-closed", "dicht"]):
+        return "⛔", "#Banda_Inchisa"
     elif any(kw in combined for kw in ["werkzaamheden", "onderhoud", "spoedreparatie", "roadworks"]):
         return "🚧", "#Lucrari_Drumuri"
     elif any(kw in combined for kw in ["wegdek", "slechte toestand"]):
         return "⚠️", "#Drum_Deteriorat"
-    elif any(kw in combined for kw in ["carriagewayClosures", "laneClosures", "afgesloten", "road-closed"]):
-        return "⛔", "#Banda_Inchisa"
     elif any(kw in combined for kw in ["stilstaand", "stationarytraffic"]):
         return "🛑", "#Trafic_Stationar"
     elif any(kw in combined for kw in ["langzaam", "slowtraffic", "queuingtraffic", "file", "jams"]):
