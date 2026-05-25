@@ -217,6 +217,34 @@ def get_locatie_text(lat, lon):
         LOCATIE_CACHE[cache_key] = ("", "")
         return ("", "")
 
+def get_coords(city):
+    try:
+        url = f"https://nominatim.openstreetmap.org/search?city={city}&country=Netherlands&format=json"
+        resp = requests.get(url, headers={"User-Agent": "OlandaBot/10.3 (Routing)"}, timeout=8).json()
+        if resp:
+            return resp[0]['lon'], resp[0]['lat']
+    except:
+        pass
+    return None, None
+
+def get_route_roads(lon1, lat1, lon2, lat2):
+    try:
+        url = f"http://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?steps=true&overview=false"
+        resp = requests.get(url, timeout=10).json()
+        roads = set()
+        if resp.get("code") == "Ok":
+            steps = resp["routes"][0]["legs"][0]["steps"]
+            for step in steps:
+                ref = step.get("ref", "")
+                if ref:
+                    for part in ref.split("-"):
+                        part = part.strip()
+                        if re.match(r'^[AEN]\d{1,3}$', part, re.IGNORECASE):
+                            roads.add(part.upper())
+        return list(roads)
+    except:
+        return []
+
 # ==========================================
 # AI (DeepSeek pentru stiri)
 # ==========================================
@@ -727,7 +755,47 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     text = update.message.text.strip() if update.message and update.message.text else ""
     
-    # Check if text is a valid road number (e.g. A2, N11)
+    # 1. Cautare ruta
+    match_ruta = re.match(r'^(?:ruta|traseu)\s+([a-zA-Z\-\s]+?)\s+(?:la|catre|-|>)?\s*([a-zA-Z\-\s]+)$', text, re.IGNORECASE)
+    if match_ruta:
+        oras1 = match_ruta.group(1).strip().capitalize()
+        oras2 = match_ruta.group(2).strip().capitalize()
+        trimite_telegram(f"🗺️ <b>Calculez traseul:</b> {oras1} ➡️ {oras2}...", chat_id=chat_id)
+        
+        lon1, lat1 = get_coords(oras1)
+        lon2, lat2 = get_coords(oras2)
+        
+        if not lon1 or not lon2:
+            trimite_telegram(f"❌ Nu am putut găsi coordonatele pentru <b>{oras1}</b> sau <b>{oras2}</b> pe hartă.", chat_id=chat_id)
+            return
+            
+        drumuri = get_route_roads(lon1, lat1, lon2, lat2)
+        if not drumuri:
+            trimite_telegram(f"❌ Nu am putut calcula autostrăzile folosite pentru acest traseu.", chat_id=chat_id)
+            return
+            
+        msg = f"🛣️ <b>Traseu {oras1} ➡️ {oras2}</b>\n"
+        msg += f"Autostrăzi folosite: <b>{', '.join(drumuri)}</b>\n\n"
+        trimite_telegram(msg + "Verific alertele LIVE...", chat_id=chat_id)
+        
+        alerte_live = preia_trafic_live()
+        alerte_traseu = []
+        for a in alerte_live:
+            if a.get("road_number", "").upper() in drumuri:
+                alerte_traseu.append(a)
+                
+        if not alerte_traseu:
+            trimite_telegram(f"✅ <b>Drum liber!</b> Nu există alerte majore live pe aceste autostrăzi acum.\n\n<i>{SEMNATURA}</i>", chat_id=chat_id)
+        else:
+            trimite_telegram(f"⚠️ <b>Atenție! Am găsit {len(alerte_traseu)} incidente pe traseul tău:</b>", chat_id=chat_id)
+            time.sleep(1)
+            for a in alerte_traseu[:10]:
+                msg_alerta = construieste_mesaj_alerta(a)
+                trimite_telegram(msg_alerta, chat_id=chat_id)
+                time.sleep(1)
+        return
+
+    # 2. Cautare drum (A2, N11)
     if re.match(r'^[A-Za-z]\d{1,3}$', text):
         road_query = text.upper()
         
